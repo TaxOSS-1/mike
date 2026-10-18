@@ -41,13 +41,13 @@ describe("default workflow list", () => {
     });
 
     it("reads the configured list in order, defaulting missing flags to false", () => {
-        withEnv('[{"key":"proofread","quickAction":true},{"key":"tax-research-memo"}]');
+        withEnv('[{"key":"proofread","quickAction":true},{"key":"research-memo"}]');
         expect(loadDefaultWorkflows()).toEqual([
             { key: "proofread", quickAction: true, wordQuickAction: false },
-            { key: "tax-research-memo", quickAction: false, wordQuickAction: false },
+            { key: "research-memo", quickAction: false, wordQuickAction: false },
         ]);
-        expect(defaultWorkflowByKey().get("tax-research-memo")).toEqual({
-            key: "tax-research-memo",
+        expect(defaultWorkflowByKey().get("research-memo")).toEqual({
+            key: "research-memo",
             quickAction: false,
             wordQuickAction: false,
             sortOrder: 1,
