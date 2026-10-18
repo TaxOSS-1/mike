@@ -16,11 +16,11 @@ describe("Word chat prompt identity", () => {
     });
 
     it("takes the name and domain from the environment", () => {
-        process.env.APP_NAME = "Tax OSS";
+        process.env.APP_NAME = "Acme Assist";
         process.env.APP_DOMAIN = "tax";
         for (const prompt of [buildWordChatSystemPrompt(false), buildWordChatSystemPrompt(true)]) {
             expect(
-                prompt.startsWith("You are Tax OSS, an AI tax assistant running inside Microsoft Word."),
+                prompt.startsWith("You are Acme Assist, an AI tax assistant running inside Microsoft Word."),
             ).toBe(true);
         }
     });

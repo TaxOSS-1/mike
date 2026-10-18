@@ -29,22 +29,22 @@ describe("branding", () => {
     });
 
     it("reads the app's own URL and description", async () => {
-        vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.tax-oss.com");
-        vi.stubEnv("NEXT_PUBLIC_APP_DESCRIPTION", "Open source AI for tax work.");
+        vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.example.com");
+        vi.stubEnv("NEXT_PUBLIC_APP_DESCRIPTION", "AI for tax work.");
         const branding = await load();
-        expect(branding.APP_URL).toBe("https://app.tax-oss.com");
-        expect(branding.APP_DESCRIPTION).toBe("Open source AI for tax work.");
+        expect(branding.APP_URL).toBe("https://app.example.com");
+        expect(branding.APP_DESCRIPTION).toBe("AI for tax work.");
     });
 
     it("reads the environment", async () => {
-        vi.stubEnv("NEXT_PUBLIC_APP_NAME", "Tax OSS");
-        vi.stubEnv("NEXT_PUBLIC_APP_TAGLINE", "Open source tax AI platform");
-        vi.stubEnv("NEXT_PUBLIC_APP_HOME_URL", "https://tax-oss.com");
+        vi.stubEnv("NEXT_PUBLIC_APP_NAME", "Acme Assist");
+        vi.stubEnv("NEXT_PUBLIC_APP_TAGLINE", "AI platform for tax teams");
+        vi.stubEnv("NEXT_PUBLIC_APP_HOME_URL", "https://example.com");
         const branding = await load();
-        expect(branding.APP_NAME).toBe("Tax OSS");
-        expect(branding.APP_HOME_URL).toBe("https://tax-oss.com");
+        expect(branding.APP_NAME).toBe("Acme Assist");
+        expect(branding.APP_HOME_URL).toBe("https://example.com");
         expect(branding.appTitle(branding.APP_TAGLINE)).toBe(
-            "Tax OSS - Open source tax AI platform",
+            "Acme Assist - AI platform for tax teams",
         );
     });
 

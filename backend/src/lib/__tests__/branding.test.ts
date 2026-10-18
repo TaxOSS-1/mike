@@ -17,10 +17,10 @@ describe("branding", () => {
     });
 
     it("reads the environment", () => {
-        process.env.APP_NAME = "Tax OSS";
+        process.env.APP_NAME = "Acme Assist";
         process.env.APP_ASSISTANT_PERSONA = "an AI assistant for tax professionals.";
         process.env.APP_DOMAIN = "tax";
-        expect(appName()).toBe("Tax OSS");
+        expect(appName()).toBe("Acme Assist");
         expect(assistantPersona()).toBe("an AI assistant for tax professionals.");
         expect(appDomain()).toBe("tax");
     });
@@ -37,7 +37,7 @@ describe("branding", () => {
     });
 
     it("trims surrounding whitespace", () => {
-        process.env.APP_NAME = "  Tax OSS  ";
-        expect(appName()).toBe("Tax OSS");
+        process.env.APP_NAME = "  Acme Assist  ";
+        expect(appName()).toBe("Acme Assist");
     });
 });

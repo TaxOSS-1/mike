@@ -21,7 +21,7 @@ describe("Word add-in branding", () => {
     });
 
     it("reads REACT_APP_APP_NAME", async () => {
-        vi.stubEnv("REACT_APP_APP_NAME", "Tax OSS");
-        expect((await load()).APP_NAME).toBe("Tax OSS");
+        vi.stubEnv("REACT_APP_APP_NAME", "Acme Assist");
+        expect((await load()).APP_NAME).toBe("Acme Assist");
     });
 });

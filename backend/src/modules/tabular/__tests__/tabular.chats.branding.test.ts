@@ -22,10 +22,10 @@ describe("tabular review chat prompt identity", () => {
     });
 
     it("takes the name and domain from the environment", () => {
-        process.env.APP_NAME = "Tax OSS";
+        process.env.APP_NAME = "Acme Assist";
         process.env.APP_DOMAIN = "tax";
         const text = systemText();
-        expect(text.startsWith('You are Tax OSS, an AI tax assistant. You are helping with the tabular review titled "Review".')).toBe(true);
+        expect(text.startsWith('You are Acme Assist, an AI tax assistant. You are helping with the tabular review titled "Review".')).toBe(true);
         expect(text).toContain("The review extracts specific fields from multiple tax documents into a structured table.");
     });
 });

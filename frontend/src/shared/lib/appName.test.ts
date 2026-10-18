@@ -17,14 +17,14 @@ describe("appName", () => {
     });
 
     it("takes the web app's name", async () => {
-        vi.stubEnv("NEXT_PUBLIC_APP_NAME", "Tax OSS");
+        vi.stubEnv("NEXT_PUBLIC_APP_NAME", "Acme Assist");
         vi.stubEnv("REACT_APP_APP_NAME", "");
-        expect((await load()).APP_NAME).toBe("Tax OSS");
+        expect((await load()).APP_NAME).toBe("Acme Assist");
     });
 
     it("takes the Word add-in's name when the web app's is unset", async () => {
         vi.stubEnv("NEXT_PUBLIC_APP_NAME", "");
-        vi.stubEnv("REACT_APP_APP_NAME", "Tax OSS");
-        expect((await load()).APP_NAME).toBe("Tax OSS");
+        vi.stubEnv("REACT_APP_APP_NAME", "Acme Assist");
+        expect((await load()).APP_NAME).toBe("Acme Assist");
     });
 });
