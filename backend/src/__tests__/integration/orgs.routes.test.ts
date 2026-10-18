@@ -411,6 +411,8 @@ describe("a personal organization", () => {
         ["get", "/orgs/mine/logo", undefined],
         ["put", "/orgs/mine/logo", { data_url: "data:image/png;base64,AAAA" }],
         ["delete", "/orgs/mine/logo", undefined],
+        ["get", "/orgs/mine/profile", undefined],
+        ["put", "/orgs/mine/profile", { group_name: "Mine" }],
         ["get", "/orgs/mine/resources", undefined],
         ["get", "/orgs/mine/members", undefined],
         ["patch", "/orgs/mine/members/owner-1", { role: "member" }],
