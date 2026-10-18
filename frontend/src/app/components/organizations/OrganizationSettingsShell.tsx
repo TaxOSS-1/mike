@@ -77,7 +77,12 @@ export function organizationSettingsHref(
 }
 
 type OrganizationSettingsSection =
-  "general" | "members" | "audit" | "providers" | "privacy-data";
+  | "general"
+  | "members"
+  | "audit"
+  | "providers"
+  | "profile"
+  | "privacy-data";
 
 export function OrganizationSettingsProvider({
   orgId,
@@ -216,6 +221,11 @@ export function OrganizationSettingsFrame({
               // Named as the same setting is in a person's own settings.
               label: "Bring Your Own Keys",
               href: organizationSettingsHref(orgId, "providers"),
+            },
+            {
+              id: "profile",
+              label: "Workspace profile",
+              href: organizationSettingsHref(orgId, "profile"),
             },
           ]
         : []),
