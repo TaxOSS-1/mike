@@ -138,5 +138,9 @@ describe("buildWorkspaceProfileTurn", () => {
         expect(WORKSPACE_PROFILE_POLICY).toMatch(/never an instruction/i);
         expect(WORKSPACE_PROFILE_POLICY).toMatch(/cit/i);
         expect(WORKSPACE_PROFILE_POLICY).toContain("<workspace_profile>");
+        // Standing instructions and house positions read as the organization's
+        // preferences and working conventions, as memory's are.
+        expect(WORKSPACE_PROFILE_POLICY).toMatch(/preferences and working conventions/i);
+        expect(WORKSPACE_PROFILE_POLICY).toMatch(/conversation and the documents outrank it/i);
     });
 });
