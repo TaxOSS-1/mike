@@ -306,6 +306,10 @@ module.exports = async (_env, options) => {
         // model — this config file cannot import that TypeScript constant, so
         // repeating its value here would be a second copy that silently drifts.
         REACT_APP_DEFAULT_MODEL: process.env.REACT_APP_DEFAULT_MODEL || "",
+        // The product name the pane shows; empty keeps "Mike" (src/shared/branding.ts).
+        REACT_APP_APP_NAME: process.env.REACT_APP_APP_NAME || "",
+        // Shared frontend code reads the web app's name first; the add-in has none.
+        NEXT_PUBLIC_APP_NAME: "",
         // The Mike web app origin — the task pane links here (e.g. the
         // account/api-keys page); it never fetches from it.
         REACT_APP_WEB_APP_URL: isDev
