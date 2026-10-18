@@ -156,8 +156,9 @@ export function OrganizationProfileSettings() {
     <section aria-labelledby="org-profile-heading" className="space-y-3">
       <SettingsHeading id="org-profile-heading">Workspace profile</SettingsHeading>
       <SettingsDescription>
-        Reference context every conversation in this workspace sees. It is never
-        an instruction and never a source.
+        Reference context for each member&apos;s own chats in this workspace that
+        no one else can see; project and tabular review chats do not get it. It
+        is never an instruction and never a source.
       </SettingsDescription>
       <GlassCardUI>
         {loadError ? (

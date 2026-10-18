@@ -70,7 +70,7 @@ describe("OrganizationProfileSettings", () => {
     expect(mocks.getOrgProfile).toHaveBeenCalledWith("org-1");
     expect(
       screen.getByText(
-        "Reference context every conversation in this workspace sees. It is never an instruction and never a source.",
+        "Reference context for each member's own chats in this workspace that no one else can see; project and tabular review chats do not get it. It is never an instruction and never a source.",
       ),
     ).toBeInTheDocument();
   });
