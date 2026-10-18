@@ -16,6 +16,7 @@ describe("branding", () => {
         vi.stubEnv("NEXT_PUBLIC_APP_HOME_URL", "");
         vi.stubEnv("NEXT_PUBLIC_APP_URL", "");
         vi.stubEnv("NEXT_PUBLIC_APP_DESCRIPTION", "");
+        vi.stubEnv("NEXT_PUBLIC_APP_DOMAIN", "");
         const branding = await load();
         expect(branding.APP_NAME).toBe("Mike");
         expect(branding.APP_TAGLINE).toBe("Legal AI Platform");
@@ -25,6 +26,19 @@ describe("branding", () => {
         expect(branding.APP_URL).toBe("https://app.mikeoss.com");
         expect(branding.APP_DESCRIPTION).toBe(
             "AI-powered legal document analysis and contract review platform.",
+        );
+        expect(branding.APP_DOMAIN).toBe("legal");
+        expect(branding.APP_DISCLAIMER).toBe(
+            "AI can make mistakes. Answers are not legal advice.",
+        );
+    });
+
+    it("names the app's own field in the disclaimer", async () => {
+        vi.stubEnv("NEXT_PUBLIC_APP_DOMAIN", "  tax ");
+        const branding = await load();
+        expect(branding.APP_DOMAIN).toBe("tax");
+        expect(branding.APP_DISCLAIMER).toBe(
+            "AI can make mistakes. Answers are not tax advice.",
         );
     });
 

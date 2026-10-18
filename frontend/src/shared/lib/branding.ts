@@ -38,6 +38,12 @@ export const APP_DESCRIPTION = orDefault(
     "AI-powered legal document analysis and contract review platform.",
 );
 
+/** The field the app works in, as in "not legal advice" (NEXT_PUBLIC_APP_DOMAIN). */
+export const APP_DOMAIN = orDefault(process.env.NEXT_PUBLIC_APP_DOMAIN, "legal");
+
+/** The line under the chat box. */
+export const APP_DISCLAIMER = `AI can make mistakes. Answers are not ${APP_DOMAIN} advice.`;
+
 /** A page title: the product name, then the suffix when there is one. */
 export function appTitle(suffix?: string): string {
     return suffix ? `${APP_NAME} - ${suffix}` : APP_NAME;
