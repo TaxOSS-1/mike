@@ -7,6 +7,7 @@ export {
   listChats,
   createChat,
   deleteChat,
+  discardRejectedChatInput,
   type ChatWriteResult,
 } from "./chat.crud";
 export {
@@ -54,10 +55,13 @@ export {
   writeApprovedConnectorFrames,
   generateSpotlightNonce,
   spotlightFilename,
+  createSubagentRunStore,
+  purgeExpiredSubagentRuns,
   type AskInputsResponseRequest,
   type AssistantEvent,
   type ChatDocumentReference,
   type ChatMessage,
+  type SubagentDefaults,
   type TabularCellStore,
   TABULAR_TOOLS,
   parseOptionalDocumentContext,

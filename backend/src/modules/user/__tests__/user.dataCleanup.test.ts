@@ -92,6 +92,9 @@ function makeDb(
                     removedIds.includes(String(row.project_id)),
                 ),
             );
+        } else if (table === "project_subfolders") {
+            cascadeDelete("project_subfolders", removeRows("project_subfolders", row =>
+                removedIds.includes(String(row.parent_folder_id))));
         } else if (table === "documents") {
             removeRows("document_versions", (row) =>
                 removedIds.includes(String(row.document_id)),
@@ -117,6 +120,16 @@ function makeDb(
             removeRows("tabular_review_chat_messages", (row) =>
                 removedIds.includes(String(row.chat_id)),
             );
+        } else if (table === "playbooks") {
+            for (const child of [
+                "playbook_runs",
+                "playbook_sources",
+                "playbook_shares",
+            ]) {
+                removeRows(child, (row) =>
+                    removedIds.includes(String(row.playbook_id)),
+                );
+            }
         } else if (table === "word_documents") {
             cascadeDelete(
                 "word_chats",
@@ -135,6 +148,16 @@ function makeDb(
             // These fixtures exercise the post-offboarding data/storage cascade.
             // Departure classification and atomicity have real PostgreSQL tests.
             if (name === "prepare_account_org_departures") return { data: null, error: null };
+            if (name === "org_default_departure_successor") {
+                const departing = args.p_departing as string[];
+                const owner = (tables.org_members ?? []).find(
+                    (row) =>
+                        row.org_id === args.p_org_id &&
+                        row.role === "owner" &&
+                        !departing.includes(String(row.user_id)),
+                );
+                return { data: owner?.user_id ?? null, error: null };
+            }
             // The cleanup worker's reference checks are body-based RPCs (a
             // GET `in(...)` with hundreds of keys drew a gateway 414).
             if (name === "document_cache_writer_active") {
@@ -622,7 +645,11 @@ describe("deleteUserAccountData", () => {
                 },
             ],
             tabular_review_chats: [{ id: "rc1", user_id: "u1" }],
-            project_subfolders: [{ id: "f1", user_id: "u1" }],
+            project_subfolders: [
+                { id: "f1", user_id: "u1", project_id: "p1" },
+                { id: "contributed", user_id: "u1", project_id: "p-other", parent_folder_id: null },
+                { id: "nested", user_id: "u2", project_id: "p-other", parent_folder_id: "contributed" },
+            ],
             hidden_workflows: [{ id: "h1", user_id: "u1" }],
             workflow_open_source_submissions: [
                 { id: "s1", submitted_by_user_id: "u1" },
@@ -689,7 +716,10 @@ describe("deleteUserAccountData", () => {
         expect(ids(tables.chats)).toEqual(["c-other"]);
         expect(tables.tabular_review_chats).toEqual([]);
         expect(ids(tables.tabular_reviews)).toEqual(["r-other"]);
-        expect(tables.project_subfolders).toEqual([]);
+        expect(tables.project_subfolders).toEqual([
+            { id: "contributed", user_id: null, project_id: "p-other", parent_folder_id: null },
+            { id: "nested", user_id: "u2", project_id: "p-other", parent_folder_id: "contributed" },
+        ]);
         expect(tables.hidden_workflows).toEqual([]);
         expect(tables.workflow_open_source_submissions).toEqual([]);
         expect(ids(tables.workflows)).toEqual(["w-other"]);
@@ -754,6 +784,64 @@ describe("deleteUserAccountData", () => {
     // cascade before them: that combination leaves the content erased and the
     // login still working. The trigger's db_jobs rows stay pending, so the
     // bytes are still owned by a retryable record.
+    it("deletes the user's playbooks, runs, imports and shares with their files", async () => {
+        const { db, tables } = makeDb({
+            playbooks: [
+                {
+                    id: "pb1",
+                    user_id: "u1",
+                    org_id: null,
+                    visibility: "private",
+                    source_storage_key: "playbooks/u1/pb1/source-a.docx",
+                },
+                { id: "pb-other", user_id: "u2", org_id: null, visibility: "private" },
+            ],
+            playbook_sources: [
+                {
+                    id: "src1",
+                    playbook_id: "pb1",
+                    storage_key: "playbooks/u1/pb1/sources/src1.pdf",
+                },
+            ],
+            playbook_runs: [
+                { id: "run-own", playbook_id: "pb1", user_id: "u1" },
+                { id: "run-on-other", playbook_id: "pb-other", user_id: "u1" },
+                { id: "run-colleague", playbook_id: "pb-other", user_id: "u2" },
+            ],
+            playbook_imports: [
+                { id: "import-own", user_id: "u1" },
+                { id: "import-other", user_id: "u2" },
+            ],
+            playbook_shares: [
+                { id: "share-to-u1", playbook_id: "pb-other", shared_with_email: "u1@example.com" },
+                { id: "share-keep", playbook_id: "pb-other", shared_with_email: "keep@example.com" },
+            ],
+        });
+        listFilesMock.mockImplementation(async (prefix: string) =>
+            prefix === "playbooks/u1/"
+                ? [
+                      "playbooks/u1/pb1/source-a.docx",
+                      "playbooks/u1/pb1/sources/src1.pdf",
+                      // A staged upload an interrupted import never read.
+                      "playbooks/u1/imports/staged.docx",
+                  ]
+                : [],
+        );
+
+        await deleteUserAccountData(db, "u1", "U1@example.com");
+
+        expect(ids(tables.playbooks)).toEqual(["pb-other"]);
+        expect(tables.playbook_sources).toEqual([]);
+        expect(ids(tables.playbook_runs)).toEqual(["run-colleague"]);
+        expect(ids(tables.playbook_imports)).toEqual(["import-other"]);
+        expect(ids(tables.playbook_shares)).toEqual(["share-keep"]);
+        expect(deleteFileMock.mock.calls.map(([path]) => path).sort()).toEqual([
+            "playbooks/u1/imports/staged.docx",
+            "playbooks/u1/pb1/source-a.docx",
+            "playbooks/u1/pb1/sources/src1.pdf",
+        ]);
+    });
+
     it("finishes the cascade when the object store refuses a delete", async () => {
         const { db, tables } = fixture();
         deleteFileMock.mockRejectedValue(new Error("storage unavailable"));
@@ -1008,6 +1096,56 @@ describe("deleteUserAccountData organization retention", () => {
         const deleted = deleteFileMock.mock.calls.map(([path]) => path);
         expect(deleted).toContain("documents/u1/d-personal/source.pdf");
         expect(deleted).not.toContain("documents/u1/d-colleague/source.pdf");
+    });
+
+    it("hands the leaver's public org playbooks to an org owner and deletes the private ones", async () => {
+        const { db, tables } = fixture();
+        tables.org_members = [
+            { org_id: "org-1", user_id: "u2", role: "owner" },
+        ];
+        tables.playbooks = [
+            {
+                id: "pb-public",
+                user_id: "u1",
+                org_id: "org-1",
+                visibility: "organization",
+                source_storage_key: "playbooks/u1/pb-public/source-a.docx",
+            },
+            {
+                id: "pb-private",
+                user_id: "u1",
+                org_id: "org-1",
+                visibility: "private",
+                source_storage_key: "playbooks/u1/pb-private/source-b.docx",
+            },
+        ];
+        tables.playbook_sources = [
+            {
+                id: "src-public",
+                playbook_id: "pb-public",
+                storage_key: "playbooks/u1/pb-public/sources/src.pdf",
+            },
+        ];
+        listFilesMock.mockImplementation(async (prefix: string) =>
+            prefix === "playbooks/u1/"
+                ? [
+                      "playbooks/u1/pb-public/source-a.docx",
+                      "playbooks/u1/pb-public/sources/src.pdf",
+                      "playbooks/u1/pb-private/source-b.docx",
+                  ]
+                : [],
+        );
+
+        await deleteUserAccountData(db, "u1", null);
+
+        expect(row(tables.playbooks, "pb-public")?.user_id).toBe("u2");
+        expect(row(tables.playbooks, "pb-private")).toBeUndefined();
+        expect(ids(tables.playbook_sources)).toEqual(["src-public"]);
+        const deleted = deleteFileMock.mock.calls.map(([path]) => path);
+        // The kept playbook's files stay under the departed creator's prefix.
+        expect(deleted).not.toContain("playbooks/u1/pb-public/source-a.docx");
+        expect(deleted).not.toContain("playbooks/u1/pb-public/sources/src.pdf");
+        expect(deleted).toContain("playbooks/u1/pb-private/source-b.docx");
     });
 
     it("leaves the bytes of every row the organization keeps", async () => {

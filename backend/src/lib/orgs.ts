@@ -32,6 +32,7 @@ import type { OrgMemberHandover } from "@mike/contracts";
 import { listOrgPrivateContentAccess } from "./orgPrivateContent";
 import type { Db } from "./supabase";
 import { recordAudit } from "./audit";
+import { mailLink, sendMail } from "./mail/mail";
 import {
     canManageOrgRole,
     getOrgRole,
@@ -930,6 +931,7 @@ export async function createInvitation(
             title: email,
             detail: { org_id: params.orgId, role, invitation_id: live.id },
         });
+        await sendInvitationEmail(db, { orgId: params.orgId, email, role });
         return {
             ok: true,
             invitation: presentInvitation(refreshed as InvitationRow),
@@ -972,10 +974,40 @@ export async function createInvitation(
             invitation_id: (invitation as { id: string }).id,
         },
     });
+    await sendInvitationEmail(db, { orgId: params.orgId, email, role });
     return {
         ok: true,
         invitation: presentInvitation(invitation as InvitationRow),
     };
+}
+
+/**
+ * Tell the invitee by email when the deployment can send mail. The invitation
+ * is complete without it (it waits under Settings > Organizations for whoever
+ * signs in with that address), so a missing or failing mailer changes
+ * nothing but the delivery.
+ */
+async function sendInvitationEmail(
+    db: Db,
+    params: { orgId: string; email: string; role: string },
+): Promise<void> {
+    const { data } = await db
+        .from("organizations")
+        .select("name")
+        .eq("id", params.orgId)
+        .maybeSingle();
+    const orgName = (data as { name?: string | null } | null)?.name?.trim() || "an organization";
+    await sendMail({
+        to: params.email,
+        subject: `You are invited to join ${orgName}`,
+        text: [
+            `You have been invited to join ${orgName} as ${params.role === "admin" ? "an admin" : "a member"}.`,
+            "",
+            `Sign in with this email address and open ${mailLink("/settings/organizations")} to accept or decline.`,
+            "",
+            `The invitation expires in ${INVITATION_TTL_DAYS} days.`,
+        ].join("\n"),
+    });
 }
 
 export async function listInvitations(
@@ -1124,6 +1156,7 @@ export async function resendInvitation(
         title: row.email,
         detail: { org_id: params.orgId, invitation_id: row.id },
     });
+    await sendInvitationEmail(db, { orgId: params.orgId, email: row.email, role: row.role });
     return {
         ok: true,
         invitation: presentInvitation(refreshed as InvitationRow),

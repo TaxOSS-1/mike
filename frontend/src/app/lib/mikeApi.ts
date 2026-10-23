@@ -832,11 +832,19 @@ export interface UserProfile extends RouterProfileLists {
     titleModel: string | null;
     tabularModel: string | null;
     memoryCuratorModel: string | null;
+    subagentModel: string | null;
+    subagentReasoning: NonNullable<Message["reasoning"]> | null;
     lastSelectedChatModel: string | null;
     lastSelectedReasoningLevel: NonNullable<Message["reasoning"]>;
     mfaOnLogin: boolean;
-    legalResearchUs: boolean;
+    /**
+     * The deployment answers CourtListener lookups from its bulk index, so
+     * the connector is installed for everyone without a token.
+     */
+    courtlistenerBulkData?: boolean;
     quickActionsVisible: boolean;
+    /** Whether responses and subagents show the model, effort and tokens they used. */
+    responseDetailsVisible?: boolean;
     darkMode: boolean;
     projectMemoryDefault: boolean;
     apiKeyStatus: ApiKeyStatus;
@@ -956,10 +964,12 @@ export async function updateUserProfile(payload: {
     titleModel?: string | null;
     tabularModel?: string | null;
     memoryCuratorModel?: string | null;
+    subagentModel?: string | null;
+    subagentReasoning?: NonNullable<Message["reasoning"]> | null;
     lastSelectedChatModel?: string | null;
     lastSelectedReasoningLevel?: NonNullable<Message["reasoning"]>;
-    legalResearchUs?: boolean;
     quickActionsVisible?: boolean;
+    responseDetailsVisible?: boolean;
     darkMode?: boolean;
     projectMemoryDefault?: boolean;
 } & Partial<RouterProfileLists>): Promise<UserProfile> {
@@ -1059,6 +1069,38 @@ export async function updateResponseStyle(
     });
 }
 
+/** Mirrors backend/src/lib/webSearch/settings.ts. */
+export const WEB_SEARCH_BACKENDS = ["brave", "tavily", "deepseek"] as const;
+
+export type WebSearchBackend = (typeof WEB_SEARCH_BACKENDS)[number];
+
+export type ProviderFamilyChoice = "provider" | WebSearchBackend | "off";
+
+export type OtherFamilyChoice = WebSearchBackend | "off";
+
+export type WebSearchSettings = {
+    enabled: boolean;
+    claude: ProviderFamilyChoice;
+    openai: ProviderFamilyChoice;
+    other: OtherFamilyChoice;
+};
+
+export async function getWebSearchSettings(
+    signal?: AbortSignal,
+): Promise<WebSearchSettings> {
+    return apiRequest<WebSearchSettings>("/user/web-search", { signal });
+}
+
+export async function updateWebSearchSettings(
+    update: Partial<WebSearchSettings>,
+): Promise<WebSearchSettings> {
+    return apiRequest<WebSearchSettings>("/user/web-search", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(update),
+    });
+}
+
 export async function completeUserOnboarding(
     payload: PersonalisationDetails = {},
 ): Promise<UserProfile> {
@@ -1099,7 +1141,8 @@ export type ApiKeyProvider =
     | "vertex"
     | "xai"
     | "custom"
-    | "courtlistener";
+    | "courtlistener"
+    | WebSearchBackend;
 /**
  * Whose key a provider runs on: the person's own, their organization's, or
  * the deployment's. "org" only ever appears in an organization's status.
@@ -1296,8 +1339,25 @@ export interface McpConnectorCreateResult {
     oauthRequired: boolean;
 }
 
-export async function listMcpConnectors(): Promise<McpConnectorSummary[]> {
-    return apiRequest<McpConnectorSummary[]>("/user/mcp-connectors");
+/**
+ * A connector route in one workspace. A person keeps a separate set of
+ * connections for Personal and for each organization they belong to;
+ * `workspace` names which ("personal" or an organization id). Omitted, the
+ * server reads it as Personal. A workspace the caller has left answers 404
+ * `workspace_not_found`.
+ */
+function connectorPath(path: string, workspace?: string): string {
+    return workspace
+        ? `${path}?${new URLSearchParams({ workspace }).toString()}`
+        : path;
+}
+
+export async function listMcpConnectors(
+    workspace?: string,
+): Promise<McpConnectorSummary[]> {
+    return apiRequest<McpConnectorSummary[]>(
+        connectorPath("/user/mcp-connectors", workspace),
+    );
 }
 
 export async function getMcpConnector(
@@ -1308,17 +1368,23 @@ export async function getMcpConnector(
     );
 }
 
-export async function createMcpConnector(payload: {
-    name: string;
-    serverUrl: string;
-    bearerToken?: string | null;
-    headers?: Record<string, string>;
-}): Promise<McpConnectorCreateResult> {
-    return apiRequest<McpConnectorCreateResult>("/user/mcp-connectors", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-    });
+export async function createMcpConnector(
+    payload: {
+        name: string;
+        serverUrl: string;
+        bearerToken?: string | null;
+        headers?: Record<string, string>;
+    },
+    workspace?: string,
+): Promise<McpConnectorCreateResult> {
+    return apiRequest<McpConnectorCreateResult>(
+        connectorPath("/user/mcp-connectors", workspace),
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        },
+    );
 }
 
 export async function updateMcpConnector(
@@ -1407,51 +1473,72 @@ export function isConnectorSetupError(error: unknown): error is MikeApiError {
     );
 }
 
-export async function getGoogleDriveStatus(): Promise<GoogleDriveStatus> {
-    return apiRequest<GoogleDriveStatus>("/user/integrations/google-drive");
+export async function getGoogleDriveStatus(
+    workspace?: string,
+): Promise<GoogleDriveStatus> {
+    return apiRequest<GoogleDriveStatus>(
+        connectorPath("/user/integrations/google-drive", workspace),
+    );
 }
 
-export async function startGoogleDriveOAuth(): Promise<{
+export async function startGoogleDriveOAuth(workspace?: string): Promise<{
     authorizationUrl: string;
 }> {
     return apiRequest<{ authorizationUrl: string }>(
-        "/user/integrations/google-drive/oauth/start",
+        connectorPath("/user/integrations/google-drive/oauth/start", workspace),
         { method: "POST" },
     );
 }
 
-export async function cancelGoogleDriveOAuth(state: string): Promise<void> {
-    await apiRequest("/user/integrations/google-drive/oauth/cancel", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state }),
-    });
+export async function cancelGoogleDriveOAuth(
+    state: string,
+    workspace?: string,
+): Promise<void> {
+    await apiRequest(
+        connectorPath("/user/integrations/google-drive/oauth/cancel", workspace),
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ state }),
+        },
+    );
 }
 
-export async function disconnectGoogleDrive(): Promise<void> {
-    return apiRequest<void>("/user/integrations/google-drive", {
-        method: "DELETE",
-    });
+export async function disconnectGoogleDrive(workspace?: string): Promise<void> {
+    return apiRequest<void>(
+        connectorPath("/user/integrations/google-drive", workspace),
+        { method: "DELETE" },
+    );
 }
 
-export async function updateGoogleDriveSettings(settings: {
-    enabled?: boolean;
-    requireWriteApproval?: boolean;
-    readOnly?: boolean;
-}): Promise<GoogleDriveStatus> {
-    return apiRequest<GoogleDriveStatus>("/user/integrations/google-drive", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settings),
-    });
+export async function updateGoogleDriveSettings(
+    settings: {
+        enabled?: boolean;
+        requireWriteApproval?: boolean;
+        readOnly?: boolean;
+    },
+    workspace?: string,
+): Promise<GoogleDriveStatus> {
+    return apiRequest<GoogleDriveStatus>(
+        connectorPath("/user/integrations/google-drive", workspace),
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(settings),
+        },
+    );
 }
 
 export async function setGoogleDriveToolEnabled(
     toolName: string,
     enabled: boolean,
+    workspace?: string,
 ): Promise<GoogleDriveStatus> {
     return apiRequest<GoogleDriveStatus>(
-        `/user/integrations/google-drive/tools/${encodeURIComponent(toolName)}`,
+        connectorPath(
+            `/user/integrations/google-drive/tools/${encodeURIComponent(toolName)}`,
+            workspace,
+        ),
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -1463,11 +1550,73 @@ export async function setGoogleDriveToolEnabled(
 export type GoogleDrivePickerSession =
     import("@mike/contracts").GoogleDrivePickerSession;
 
-/** A short-lived Drive token plus the keys the Google Picker needs. */
-export async function createGoogleDrivePickerSession(): Promise<GoogleDrivePickerSession> {
+/**
+ * A short-lived Drive token plus the keys the Google Picker needs, for the
+ * Drive connection of `workspace`.
+ */
+export async function createGoogleDrivePickerSession(
+    workspace?: string,
+): Promise<GoogleDrivePickerSession> {
     return apiRequest<GoogleDrivePickerSession>(
-        "/user/integrations/google-drive/picker-session",
+        connectorPath(
+            "/user/integrations/google-drive/picker-session",
+            workspace,
+        ),
         { method: "POST" },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// CourtListener connector: an on/off switch and an optional own token, both
+// per workspace.
+// ---------------------------------------------------------------------------
+
+export type CourtListenerConnectorStatus =
+    import("@mike/contracts").CourtListenerConnectorStatus;
+
+export async function getCourtListenerConnector(
+    workspace?: string,
+): Promise<CourtListenerConnectorStatus> {
+    return apiRequest<CourtListenerConnectorStatus>(
+        connectorPath("/user/integrations/courtlistener", workspace),
+    );
+}
+
+export async function setCourtListenerConnectorEnabled(
+    enabled: boolean,
+    workspace?: string,
+): Promise<CourtListenerConnectorStatus> {
+    return apiRequest<CourtListenerConnectorStatus>(
+        connectorPath("/user/integrations/courtlistener", workspace),
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled }),
+        },
+    );
+}
+
+/** Saves the caller's own token; the server also turns the switch on. */
+export async function saveCourtListenerConnectorToken(
+    token: string,
+    workspace?: string,
+): Promise<CourtListenerConnectorStatus> {
+    return apiRequest<CourtListenerConnectorStatus>(
+        connectorPath("/user/integrations/courtlistener/token", workspace),
+        {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token }),
+        },
+    );
+}
+
+export async function deleteCourtListenerConnectorToken(
+    workspace?: string,
+): Promise<CourtListenerConnectorStatus> {
+    return apiRequest<CourtListenerConnectorStatus>(
+        connectorPath("/user/integrations/courtlistener/token", workspace),
+        { method: "DELETE" },
     );
 }
 
@@ -1530,6 +1679,134 @@ export interface ProjectPeople {
         role?: AccessAssignmentRole;
     }[];
     admin_contacts?: ProjectContact[];
+}
+
+export type NotificationEmailMode = "immediate" | "daily" | "off";
+
+export interface AppNotification {
+    id: string;
+    kind: string;
+    title: string;
+    body: string | null;
+    href: string | null;
+    project_id: string | null;
+    document_id: string | null;
+    read_at: string | null;
+    emailed_at: string | null;
+    created_at: string;
+}
+
+export interface NotificationPreferences {
+    email_mode: NotificationEmailMode;
+    /** False when the deployment has no SMTP: the choice is kept, nothing is sent. */
+    email_configured: boolean;
+}
+
+export async function listNotifications(options: {
+    unreadOnly?: boolean;
+    limit?: number;
+} = {}): Promise<{ notifications: AppNotification[]; unread_count: number }> {
+    const params = new URLSearchParams();
+    if (options.unreadOnly) params.set("unread", "1");
+    if (options.limit) params.set("limit", String(options.limit));
+    const query = params.toString();
+    return apiRequest(`/user/notifications${query ? `?${query}` : ""}`);
+}
+
+export async function markNotificationsRead(
+    selection: { ids: string[] } | { all: true },
+): Promise<{ marked: number }> {
+    return apiRequest(`/user/notifications/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(selection),
+    });
+}
+
+export async function getNotificationPreferences(): Promise<NotificationPreferences> {
+    return apiRequest(`/user/notifications/preferences`);
+}
+
+export async function setNotificationPreferences(
+    emailMode: NotificationEmailMode,
+): Promise<NotificationPreferences> {
+    return apiRequest(`/user/notifications/preferences`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email_mode: emailMode }),
+    });
+}
+
+export type ProjectTaskStatus = "open" | "in_progress" | "done" | "cancelled";
+
+export interface ProjectTask {
+    id: string;
+    project_id: string;
+    document_id: string | null;
+    title: string;
+    description: string | null;
+    status: ProjectTaskStatus;
+    assignee_user_id: string | null;
+    assignee_email: string | null;
+    assignee_display_name: string | null;
+    /** A calendar date as YYYY-MM-DD. */
+    due_on: string | null;
+    created_by: string | null;
+    completed_at: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface ProjectTaskInput {
+    title?: string;
+    description?: string | null;
+    status?: ProjectTaskStatus;
+    due_on?: string | null;
+    document_id?: string | null;
+    /** The email of a person with access to the project; null unassigns. */
+    assignee_email?: string | null;
+}
+
+export async function listProjectTasks(
+    projectId: string,
+    status: "open" | "done" | "all" = "open",
+): Promise<ProjectTask[]> {
+    const res = await apiRequest<{ tasks: ProjectTask[] }>(
+        `/projects/${projectId}/tasks?status=${status}`,
+    );
+    return res.tasks;
+}
+
+export async function createProjectTask(
+    projectId: string,
+    input: ProjectTaskInput,
+): Promise<ProjectTask> {
+    return apiRequest<ProjectTask>(`/projects/${projectId}/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+}
+
+export async function updateProjectTask(
+    projectId: string,
+    taskId: string,
+    patch: ProjectTaskInput,
+): Promise<ProjectTask> {
+    return apiRequest<ProjectTask>(`/projects/${projectId}/tasks/${taskId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+    });
+}
+
+export async function deleteProjectTask(
+    projectId: string,
+    taskId: string,
+): Promise<{ deleted_task_id: string }> {
+    return apiRequest(`/projects/${projectId}/tasks/${taskId}`, {
+        method: "DELETE",
+    });
 }
 
 export async function getProjectPeople(
@@ -1728,7 +2005,12 @@ export async function deleteOrg(orgId: string): Promise<void> {
     await apiRequest(`/orgs/${orgId}`, { method: "DELETE" });
 }
 
-export type OrgDataKind = "chats" | "tabular-reviews" | "projects" | "memories";
+export type OrgDataKind =
+    | "chats"
+    | "tabular-reviews"
+    | "projects"
+    | "memories"
+    | "playbooks";
 
 /** Permanently deletes one kind of content across an organization. Owner only. */
 export async function deleteOrgData(
@@ -2465,6 +2747,8 @@ export async function addDocumentToProject(
     );
 }
 
+export type DocumentVersionReviewState = "draft" | "in_review" | "approved";
+
 export interface DocumentVersion {
     id: string;
     version_number: number | null;
@@ -2477,6 +2761,11 @@ export interface DocumentVersion {
     textless_page_count?: number | null;
     deleted_at?: string | null;
     deleted_by?: string | null;
+    /** Draft until someone sends these bytes into review or approves them. */
+    review_state?: DocumentVersionReviewState | null;
+    reviewed_by?: string | null;
+    reviewed_at?: string | null;
+    review_note?: string | null;
 }
 
 export async function listDocumentVersions(documentId: string): Promise<{
@@ -2569,6 +2858,22 @@ export async function renameDocumentVersion(
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ filename }),
+        },
+    );
+}
+
+export async function setDocumentVersionReview(
+    documentId: string,
+    versionId: string,
+    state: DocumentVersionReviewState,
+    note?: string | null,
+): Promise<DocumentVersion> {
+    return apiRequest<DocumentVersion>(
+        `/single-documents/${documentId}/versions/${versionId}/review`,
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(note == null ? { state } : { state, note }),
         },
     );
 }
@@ -2931,13 +3236,26 @@ export async function deleteChat(chatId: string): Promise<void> {
 
 const panelDocumentRequests = new Map<string, Promise<PanelDocument>>();
 
+/**
+ * A source document for the side panel, such as a cited case. `workspace`
+ * ("personal" or an organization id) is the workspace of the chat or project
+ * the citation came from: a case is read with that workspace's CourtListener
+ * connection. Omitted, the server reads it as Personal.
+ */
 export async function getPanelDocument(
     documentId: string,
+    workspace?: string,
 ): Promise<PanelDocument> {
-    let request = panelDocumentRequests.get(documentId);
+    // The same document in two workspaces is two requests: each may use a
+    // different token, and one may be refused where the other is not.
+    const key = JSON.stringify([workspace ?? null, documentId]);
+    let request = panelDocumentRequests.get(key);
     if (!request) {
         request = apiRequest<unknown>(
-            `/documents/${encodeURIComponent(documentId)}`,
+            connectorPath(
+                `/documents/${encodeURIComponent(documentId)}`,
+                workspace,
+            ),
         )
             .then((value) => {
                 if (!isPanelDocument(value)) {
@@ -2945,8 +3263,8 @@ export async function getPanelDocument(
                 }
                 return value;
             })
-            .finally(() => panelDocumentRequests.delete(documentId));
-        panelDocumentRequests.set(documentId, request);
+            .finally(() => panelDocumentRequests.delete(key));
+        panelDocumentRequests.set(key, request);
     }
     return request;
 }
@@ -3889,42 +4207,51 @@ export async function deleteWorkflowAsset(
 
 export async function getGoogleWorkspaceStatus(
     provider: import("@mike/contracts").GoogleWorkspaceProvider,
+    workspace?: string,
 ) {
     return apiRequest<import("@mike/contracts").GoogleWorkspaceStatus>(
-        `/user/integrations/${provider}`,
+        connectorPath(`/user/integrations/${provider}`, workspace),
     );
 }
 export async function startGoogleWorkspaceOAuth(
     provider: import("@mike/contracts").GoogleWorkspaceProvider,
+    workspace?: string,
 ) {
     return apiRequest<{ authorizationUrl: string }>(
-        `/user/integrations/${provider}/oauth/start`,
+        connectorPath(`/user/integrations/${provider}/oauth/start`, workspace),
         { method: "POST" },
     );
 }
 export async function cancelGoogleWorkspaceOAuth(
     provider: import("@mike/contracts").GoogleWorkspaceProvider,
     state: string,
+    workspace?: string,
 ) {
-    return apiRequest<void>(`/user/integrations/${provider}/oauth/cancel`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state }),
-    });
+    return apiRequest<void>(
+        connectorPath(`/user/integrations/${provider}/oauth/cancel`, workspace),
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ state }),
+        },
+    );
 }
 export async function disconnectGoogleWorkspace(
     provider: import("@mike/contracts").GoogleWorkspaceProvider,
+    workspace?: string,
 ) {
-    return apiRequest<void>(`/user/integrations/${provider}`, {
-        method: "DELETE",
-    });
+    return apiRequest<void>(
+        connectorPath(`/user/integrations/${provider}`, workspace),
+        { method: "DELETE" },
+    );
 }
 export async function updateGoogleWorkspaceSettings(
     provider: import("@mike/contracts").GoogleWorkspaceProvider,
     settings: { enabled?: boolean; requireWriteApproval?: boolean; readOnly?: boolean },
+    workspace?: string,
 ) {
     return apiRequest<import("@mike/contracts").GoogleWorkspaceStatus>(
-        `/user/integrations/${provider}`,
+        connectorPath(`/user/integrations/${provider}`, workspace),
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -3936,9 +4263,13 @@ export async function setGoogleWorkspaceToolEnabled(
     provider: import("@mike/contracts").GoogleWorkspaceProvider,
     toolName: string,
     enabled: boolean,
+    workspace?: string,
 ) {
     return apiRequest<import("@mike/contracts").GoogleWorkspaceStatus>(
-        `/user/integrations/${provider}/tools/${encodeURIComponent(toolName)}`,
+        connectorPath(
+            `/user/integrations/${provider}/tools/${encodeURIComponent(toolName)}`,
+            workspace,
+        ),
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -3989,7 +4320,6 @@ export interface PlaybookTopic {
 export interface PlaybookContent {
     name: string;
     description: string;
-    globalGuidance: string;
     representedParty: string;
     documentTypes: string[];
     jurisdictions: string[];
@@ -4044,6 +4374,8 @@ export interface PlaybookFinding {
     /** The tracked change made in the reviewed Word document, if any. */
     edit?: EditAnnotation | null;
 }
+export type PlaybookReviewScope = "full" | "issues";
+
 export interface PlaybookRun {
     id: string;
     playbookId: string;
@@ -4054,6 +4386,8 @@ export interface PlaybookRun {
     /** The version holding the review's tracked changes, if it made any. */
     editedVersionId?: string | null;
     reviewMode: "strict" | "permissive";
+    /** "issues" reported only what needs attention. Absent on older runs. */
+    reviewScope?: PlaybookReviewScope;
     status: string;
     summary: string | null;
     findings: PlaybookFinding[];
@@ -4086,7 +4420,7 @@ export async function getPlaybook(playbookId: string): Promise<Playbook> {
     return apiRequest(`/playbooks/${encodeURIComponent(playbookId)}`);
 }
 
-/** The Word file a playbook was imported from, streamed for the viewer. */
+/** The Word or PDF file a playbook was imported from, streamed for the viewer. */
 export function getPlaybookSourceUrl(playbookId: string): string {
     return `${API_BASE}/playbooks/${encodeURIComponent(playbookId)}/source`;
 }
@@ -4180,7 +4514,8 @@ export type NewPlaybookDetails = Partial<
         | "representedParty"
         | "documentTypes"
         | "jurisdictions"
-    >
+    > &
+        Pick<Playbook, "visibility">
 >;
 
 export async function createPlaybook(
@@ -4199,18 +4534,49 @@ export async function createPlaybook(
     });
 }
 
+/** An import compiling on the server, which the page follows by polling. */
+export interface PlaybookImport {
+    id: string;
+    status: "running" | "completed" | "failed";
+    stage: string;
+    error: string | null;
+    filename: string;
+    name: string | null;
+    /** The playbook being replaced, or the one created once completed. */
+    playbookId: string | null;
+    startedAt: string;
+    completedAt: string | null;
+}
+
 /**
- * The source .docx goes straight to object storage under a signed URL, then
- * the API compiles it from that key. The API never receives the file body.
+ * Starts compiling a playbook and returns the running import at once; the
+ * compile continues on the server whether or not the page stays open. An
+ * upload goes straight to object storage under a signed URL, then the API
+ * compiles it from that key, so the API never receives the file body.
  */
-export async function importPlaybook(
-    file: File,
+export async function startPlaybookImport(
+    /** An upload, or a document already in the caller's files. */
+    source: File | { documentId: string },
     model: string,
     name?: string,
     /** Replace this playbook's content rather than create a new playbook. */
     playbookId?: string,
     workspace?: string | null,
-): Promise<Playbook> {
+): Promise<PlaybookImport> {
+    const options = {
+        model,
+        ...(name?.trim() ? { name: name.trim() } : {}),
+        ...(playbookId ? { playbookId } : {}),
+        ...(workspace ? { workspace } : {}),
+    };
+    if (!(source instanceof File)) {
+        return apiRequest<PlaybookImport>("/playbooks/import", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ documentId: source.documentId, ...options }),
+        });
+    }
+    const file = source;
     const staged = await apiRequest<{
         uploadUrl: string;
         storageKey: string;
@@ -4230,18 +4596,30 @@ export async function importPlaybook(
         throw new Error("The playbook could not be uploaded. Please try again.");
     }
 
-    return apiRequest<Playbook>("/playbooks/import", {
+    return apiRequest<PlaybookImport>("/playbooks/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
             storageKey: staged.storageKey,
             filename: file.name,
-            model,
-            ...(name?.trim() ? { name: name.trim() } : {}),
-            ...(playbookId ? { playbookId } : {}),
-            ...(workspace ? { workspace } : {}),
+            ...options,
         }),
     });
+}
+
+export async function getPlaybookImport(
+    importId: string,
+): Promise<PlaybookImport> {
+    return apiRequest(`/playbooks/imports/${encodeURIComponent(importId)}`);
+}
+
+/** The caller's imports still compiling in the workspace. */
+export async function listRunningPlaybookImports(
+    workspace?: string | null,
+): Promise<PlaybookImport[]> {
+    return apiRequest(
+        `/playbooks/imports${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`,
+    );
 }
 
 export async function updatePlaybook(
@@ -4301,6 +4679,10 @@ export async function revokePlaybookShare(
     );
 }
 
+/**
+ * Starts a review. It runs on the server apart from this request, so the run
+ * comes back still running; its status says when it has finished.
+ */
 export async function reviewDocumentWithPlaybook(
     playbookId: string,
     payload: {
@@ -4312,6 +4694,7 @@ export async function reviewDocumentWithPlaybook(
         instructions?: string;
         model: string;
         reviewMode: "strict" | "permissive";
+        reviewScope?: PlaybookReviewScope;
     },
 ): Promise<PlaybookRun> {
     return apiRequest(`/playbooks/${encodeURIComponent(playbookId)}/review`, {
@@ -4338,6 +4721,58 @@ export async function listAllPlaybookRuns(
         ? `?workspace=${encodeURIComponent(workspace)}`
         : "";
     return apiRequest(`/playbooks/runs${query}`);
+}
+
+/** Deletes one of the caller's runs; one still running is refused. */
+export async function deletePlaybookRun(runId: string): Promise<void> {
+    return apiRequest(`/playbooks/runs/${encodeURIComponent(runId)}`, {
+        method: "DELETE",
+    });
+}
+
+/** A run as the sidebar's History lists it. */
+export interface PlaybookRunHistoryItem {
+    id: string;
+    playbookId: string;
+    playbookName: string;
+    documentName: string | null;
+    status: string;
+    error: string | null;
+    startedAt: string;
+    completedAt: string | null;
+}
+
+/** A page of the caller's runs, newest first, for the sidebar's History. */
+export async function listPlaybookRunHistory(options: {
+    workspace?: string | null;
+    /** The `startedAt` of the last run already read. */
+    before?: string;
+    limit?: number;
+    signal?: AbortSignal;
+}): Promise<PlaybookRunHistoryItem[]> {
+    const params = new URLSearchParams();
+    if (options.workspace) params.set("workspace", options.workspace);
+    if (options.before) params.set("before", options.before);
+    if (options.limit) params.set("limit", String(options.limit));
+    const query = params.toString();
+    return apiRequest(`/playbooks/runs/history${query ? `?${query}` : ""}`, {
+        signal: options.signal,
+    });
+}
+
+export interface PlaybookRunStatus {
+    id: string;
+    status: string;
+    completedAt: string | null;
+}
+
+/** Small status snapshots of the caller's runs, for polling running ones. */
+export async function getPlaybookRunStatuses(
+    ids: string[],
+    signal?: AbortSignal,
+): Promise<PlaybookRunStatus[]> {
+    const params = new URLSearchParams({ ids: ids.join(",") });
+    return apiRequest(`/playbooks/runs/status?${params}`, { signal });
 }
 
 export async function deletePlaybook(playbookId: string): Promise<void> {

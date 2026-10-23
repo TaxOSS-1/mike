@@ -341,6 +341,7 @@ export function useWordAssistantChat({
               content: text,
               files: submission.files,
               workflow: submission.workflow,
+              playbook: submission.playbook,
             }
           : null;
         // A resume appends to the transcript as loaded: the user turn is
@@ -790,6 +791,13 @@ export function useWordAssistantChat({
                 );
                 publishAssistantEvents();
               },
+              onTextCard: (event) => {
+                if (!requestIsCurrent()) return;
+                assistantEvents = [
+                  ...completeAssistantEvents(assistantEvents), event,
+                ];
+                publishAssistantEvents();
+              },
           };
           const onStreamText = (chunk: string): void => {
               if (!requestIsCurrent()) return;
@@ -824,6 +832,7 @@ export function useWordAssistantChat({
                           : message.content,
                       files: message.files,
                       workflow: message.workflow,
+                      playbook: message.playbook,
                     })),
                     documentContext,
                     model: submission.model,

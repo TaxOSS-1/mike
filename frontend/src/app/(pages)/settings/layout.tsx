@@ -21,6 +21,11 @@ const TABS: SettingsShellTab[] = [
     { id: "appearance", label: "Appearance", href: "/settings/appearance" },
     { id: "features", label: "Features", href: "/settings/features" },
     {
+        id: "notifications",
+        label: "Notifications",
+        href: "/settings/notifications",
+    },
+    {
         id: "privacy-data",
         label: "Privacy & Data",
         href: "/settings/privacy-data",

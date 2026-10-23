@@ -162,6 +162,7 @@ function affectedUser(
     if (
         !action.startsWith("org.member.") &&
         !action.startsWith("org.invite.") &&
+        !action.startsWith("project.access.") &&
         action !== "org.private_content.permission_changed" &&
         action !== "org.departure.member.departed"
     ) return null;

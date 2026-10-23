@@ -13,19 +13,18 @@ import {
 } from "react";
 import {
     ArrowRight,
-    ClipboardCheck,
-    Loader2,
     Square,
     Waypoints,
     X,
 } from "lucide-react";
 import { AddDocButton } from "./AddDocButton";
 import { PlaybookPickerModal } from "../playbooks/PlaybookPickerModal";
+import { PlaybookPillUI } from "@/shared/ui/PlaybookPillUI";
 import { UploadOverlay } from "./UploadOverlay";
 import { COMPOSER_SEND_BUTTON_CLASS } from "@/shared/ui/ComposerSendButtonUI.styles";
 import { ExcerptModalUI } from "@/shared/ui/ExcerptModalUI";
 import { ExcerptPillUI } from "@/shared/ui/ExcerptPillUI";
-import { FileTypeIcon } from "../shared/FileTypeIcon";
+import { DocumentPill } from "../shared/DocumentPill";
 import { AddDocumentsModal } from "../modals/AddDocumentsModal";
 import { AssistantWorkflowModal } from "./AssistantWorkflowModal";
 import { WORKFLOW_SLASH_MENU_ID, WorkflowSlashMenu } from "./WorkflowSlashMenu";
@@ -55,10 +54,7 @@ import {
 import type { Document, Message, Workflow } from "../shared/types";
 import type { DirectoryTab } from "../shared/useDirectoryData";
 import { cn } from "@/app/lib/utils";
-import {
-    LIQUID_GLASS_FLAT_CLASS,
-    LIQUID_GLASS_TRANSLUCENT_CLASS,
-} from "@/app/components/ui/liquid-surface";
+import { LIQUID_GLASS_TRANSLUCENT_CLASS } from "@/app/components/ui/liquid-surface";
 import {
     UploadBatchError,
     failedUploadMessage,
@@ -98,6 +94,8 @@ export interface ChatInputHandle {
         prompt?: string,
         options?: { initialDocumentTab?: DirectoryTab },
     ) => void;
+    /** Attaches a playbook to run on the documents, as the picker does. */
+    attachPlaybook: (playbook: { id: string; title: string }) => void;
 }
 
 interface Props {
@@ -410,12 +408,18 @@ function ChatInputForChatImpl(
                 file,
                 clientId: crypto.randomUUID(),
             }));
-            setUploadingFiles(
-                uploadInputs.map(({ clientId, file }) => ({
+            // Batches can overlap (a second drop or pick while one is still
+            // uploading), so each adds its own pills and clears only those.
+            const batchIds = new Set(
+                uploadInputs.map(({ clientId }) => clientId),
+            );
+            setUploadingFiles((current) => [
+                ...current,
+                ...uploadInputs.map(({ clientId, file }) => ({
                     clientId,
                     filename: file.name,
                 })),
-            );
+            ]);
             const addCompletedDocument = (document: Document) => {
                 if (!uploadGenerationActiveRef.current) return;
                 addAttachedDocuments([document]);
@@ -480,7 +484,11 @@ function ChatInputForChatImpl(
                           ),
                 );
             } finally {
-                if (uploadGenerationActiveRef.current) setUploadingFiles([]);
+                if (uploadGenerationActiveRef.current) {
+                    setUploadingFiles((current) =>
+                        current.filter((upload) => !batchIds.has(upload.clientId)),
+                    );
+                }
             }
         },
         [
@@ -513,6 +521,10 @@ function ChatInputForChatImpl(
                     ? prev
                     : [...prev, excerpt],
             );
+            requestAnimationFrame(() => textareaRef.current?.focus());
+        },
+        attachPlaybook: (playbook) => {
+            setSelectedPlaybook(playbook);
             requestAnimationFrame(() => textareaRef.current?.focus());
         },
         startWorkflow: (workflow, prompt) => {
@@ -741,6 +753,7 @@ function ChatInputForChatImpl(
                     {(selectedWorkflow ||
                         selectedPlaybook ||
                         attachedDocs.length > 0 ||
+                        uploadingFiles.length > 0 ||
                         excerpts.length > 0) && (
                         <div className="flex flex-wrap gap-1.5 px-2 pt-2">
                             {selectedWorkflow && (
@@ -773,83 +786,44 @@ function ChatInputForChatImpl(
                                 </div>
                             )}
                             {selectedPlaybook && (
-                                <div className="inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full text-xs bg-slate-700 text-white border border-white/20 shadow">
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setPlaybookModalInitialId(
-                                                selectedPlaybook.id,
-                                            );
-                                            setPlaybookModalOpen(true);
-                                        }}
-                                        aria-label={`Open playbook ${selectedPlaybook.title}`}
-                                        className="inline-flex min-w-0 items-center gap-1 rounded-full transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-                                    >
-                                        <ClipboardCheck className="h-2.5 w-2.5 shrink-0" />
-                                        <span className="max-w-[140px] truncate">
-                                            {selectedPlaybook.title}
-                                        </span>
-                                    </button>
-                                    <button
-                                        type="button"
-                                        aria-label={`Remove playbook ${selectedPlaybook.title}`}
-                                        onClick={() => setSelectedPlaybook(null)}
-                                        className="rounded-full p-0.5 ml-0.5 text-white/60 hover:text-white hover:bg-white/20 transition-colors"
-                                    >
-                                        <X className="h-2.5 w-2.5" />
-                                    </button>
-                                </div>
+                                <PlaybookPillUI
+                                    title={selectedPlaybook.title}
+                                    onOpen={() => {
+                                        setPlaybookModalInitialId(
+                                            selectedPlaybook.id,
+                                        );
+                                        setPlaybookModalOpen(true);
+                                    }}
+                                    onRemove={() => setSelectedPlaybook(null)}
+                                />
                             )}
-                            {attachedDocs.map((doc) => {
-                                const documentLabel = (
-                                    <>
-                                        <FileTypeIcon
-                                            fileType={doc.file_type}
-                                            className="h-2.5 w-2.5"
-                                        />
-                                        <span className="max-w-[140px] truncate">
-                                            {doc.filename}
-                                        </span>
-                                    </>
-                                );
-                                return (
-                                    <div
-                                        key={doc.id}
-                                        className={`inline-flex items-center rounded-[10px] text-xs text-gray-800 ${LIQUID_GLASS_FLAT_CLASS}`}
-                                    >
-                                        {onDocumentClick ? (
-                                            <button
-                                                type="button"
-                                                onClick={() =>
-                                                    onDocumentClick(doc)
-                                                }
-                                                aria-label={`Open ${doc.filename}`}
-                                                className="inline-flex min-w-0 items-center gap-1 py-0.5 pl-2 transition-colors hover:text-gray-950"
-                                            >
-                                                {documentLabel}
-                                            </button>
-                                        ) : (
-                                            <span className="inline-flex min-w-0 items-center gap-1 py-0.5 pl-2">
-                                                {documentLabel}
-                                            </span>
-                                        )}
-                                        <button
-                                            type="button"
-                                            onClick={() =>
-                                                setAttachedDocs((prev) =>
-                                                    prev.filter(
-                                                        (d) => d.id !== doc.id,
-                                                    ),
-                                                )
-                                            }
-                                            aria-label={`Remove ${doc.filename}`}
-                                            className="mx-1 rounded-full p-0.5 text-gray-400 transition-colors hover:bg-gray-900/5 hover:text-gray-700"
-                                        >
-                                            <X className="h-2.5 w-2.5" />
-                                        </button>
-                                    </div>
-                                );
-                            })}
+                            {attachedDocs.map((doc) => (
+                                <DocumentPill
+                                    key={doc.id}
+                                    filename={doc.filename}
+                                    fileType={doc.file_type}
+                                    onOpen={
+                                        onDocumentClick
+                                            ? () => onDocumentClick(doc)
+                                            : undefined
+                                    }
+                                    onRemove={() =>
+                                        setAttachedDocs((prev) =>
+                                            prev.filter((d) => d.id !== doc.id),
+                                        )
+                                    }
+                                />
+                            ))}
+                            {/* Still uploading: in the same row as the
+                                attached documents, side by side. */}
+                            {uploadingFiles.map((upload) => (
+                                <DocumentPill
+                                    key={upload.clientId}
+                                    filename={upload.filename}
+                                    status="Uploading"
+                                    loading
+                                />
+                            ))}
                             {excerpts.map((excerpt, index) => (
                                 <ExcerptPillUI
                                     key={`${index}-${excerpt.text}`}
@@ -861,22 +835,6 @@ function ChatInputForChatImpl(
                                         )
                                     }
                                 />
-                            ))}
-                        </div>
-                    )}
-
-                    {uploadingFiles.length > 0 && (
-                        <div className="flex flex-wrap items-center gap-1.5 px-2 pt-2">
-                            {uploadingFiles.map((upload) => (
-                                <div
-                                    key={upload.clientId}
-                                    className={`inline-flex items-center gap-1 rounded-[10px] px-2 py-1 text-xs text-gray-600 ${LIQUID_GLASS_FLAT_CLASS}`}
-                                >
-                                    <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                                    <span className="max-w-[140px] truncate">
-                                        {upload.filename}
-                                    </span>
-                                </div>
                             ))}
                         </div>
                     )}
@@ -922,7 +880,6 @@ function ChatInputForChatImpl(
                             {!hideAddDocButton && composerOpen && (
                                 <AddDocButton
                                     onLocalFiles={() => localFileInputRef.current?.click()}
-                                    uploading={uploadingFiles.length > 0}
                                     onBrowseAll={() => {
                                         setDocSelectorInitialTab("files");
                                         setDocSelectorOpen(true);
@@ -1011,7 +968,7 @@ function ChatInputForChatImpl(
                 multiple
                 hidden
                 aria-label="Upload Documents"
-                disabled={!composerOpen || uploadingFiles.length > 0}
+                disabled={!composerOpen}
                 onChange={(event) => {
                     const files = Array.from(event.currentTarget.files ?? []);
                     event.currentTarget.value = "";

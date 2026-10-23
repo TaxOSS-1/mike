@@ -21,7 +21,7 @@ import {
     MCP_TOKEN_REFRESH_WINDOW_MS,
 } from "./jobs/registry";
 import { enqueueDbJob } from "./lib/dbq/enqueue";
-import { runStaleWorkSweep } from "./jobs/maintenance";
+import { runHourlySweeps, runStaleWorkSweep } from "./jobs/maintenance";
 import { startUploadProcessingWorkers } from "./modules/uploads/uploads.service";
 import { uploadProcessingConfiguration } from "./lib/runtimeConfig";
 import { createServerSupabase } from "./lib/supabase";
@@ -35,6 +35,9 @@ const SWEEP_INTERVAL_MS = (() => {
 /** How often to look for MCP OAuth tokens about to expire. */
 const MCP_REFRESH_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
+/** Task reminders and notification digests check in this often. */
+const HOURLY_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+
 /**
  * How far past expiry the sweep still bothers. A connector nobody has used
  * for a day is not worth waking the authorization server for every 5 minutes
@@ -47,6 +50,7 @@ const MCP_REFRESH_MAX_EXPIRED_AGE_MS = 24 * 60 * 60 * 1000;
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 let initialSweep: ReturnType<typeof setTimeout> | null = null;
 let mcpRefreshTimer: ReturnType<typeof setInterval> | null = null;
+let hourlyTimer: ReturnType<typeof setInterval> | null = null;
 let stopUploadWorker: (() => void) | null = null;
 
 /**
@@ -134,6 +138,16 @@ export function startAllWorkers(): void {
         });
     mcpRefreshTimer = setInterval(runMcpRefresh, MCP_REFRESH_SWEEP_INTERVAL_MS);
     mcpRefreshTimer.unref();
+
+    // Task reminders and notification digests: once an hour, each sweep
+    // deciding for itself whether this is its hour.
+    const runHourly = () =>
+        void runHourlySweeps().catch((err) => {
+            reportError(err, { tags: { component: "hourly-sweep" } });
+            console.error("[hourly-sweep] failed", err);
+        });
+    hourlyTimer = setInterval(runHourly, HOURLY_SWEEP_INTERVAL_MS);
+    hourlyTimer.unref();
 }
 
 /** Stop everything gracefully; safe to call more than once. */
@@ -141,9 +155,11 @@ export async function stopAllWorkers(): Promise<void> {
     if (initialSweep) clearTimeout(initialSweep);
     if (sweepTimer) clearInterval(sweepTimer);
     if (mcpRefreshTimer) clearInterval(mcpRefreshTimer);
+    if (hourlyTimer) clearInterval(hourlyTimer);
     initialSweep = null;
     sweepTimer = null;
     mcpRefreshTimer = null;
+    hourlyTimer = null;
     if (stopUploadWorker) {
         stopUploadWorker();
         stopUploadWorker = null;

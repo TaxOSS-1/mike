@@ -10,7 +10,8 @@ storage instead of the infrastructure bundled with Docker Compose.
 - A Supabase project
 - A Cloudflare R2, MinIO, or other S3-compatible bucket
 - At least one supported model-provider API key, or an accessible Ollama server
-- Optional: a CourtListener API token for case-law tools
+- Optional: CourtListener bulk data for case-law tools without a token (each
+  user can instead add their own CourtListener token in Settings > Connectors)
 - LibreOffice when DOC/DOCX-to-PDF conversion is required
 
 ## Database setup
@@ -296,8 +297,11 @@ Deployments must therefore run `backend/src/index.ts`
 (the normal `npm start` entry point), rather than importing the Express app
 without starting its worker.
 
-Model-provider keys and the CourtListener token can be configured globally in
-`backend/.env` or per user under **Settings > API Keys**. A personal key takes
+Model-provider keys can be configured globally in `backend/.env` or per user
+under **Settings > API Keys**. CourtListener tokens are never read from
+`backend/.env`: each user saves their own under **Settings > Connectors**, or an
+organization admin saves one for its members; see
+[CourtListener](courtlistener.md). A personal key takes
 precedence over the matching globally configured key; removing the personal
 key restores the global key as the fallback.
 
@@ -351,6 +355,22 @@ Review the Supabase email templates after changing the public Site URL, and
 test every link against the deployed frontend before inviting users. Existing
 deployments must also apply the latest migration so confirmed email changes are
 mirrored into `user_profiles`.
+
+## Email from Mike itself
+
+Beyond authentication, Mike sends a few messages of its own: an invitation to
+an organization, a notification (a task assigned, a project shared, a version
+sent for review or approved), the daily digest of notifications for people who
+chose one, and reminders of tasks due within two days or overdue. They go out
+over SMTP when the backend has both `SMTP_URL` (`smtp://user:pass@host:587`
+or `smtps://…`) and `MAIL_FROM` (`Mike <no-reply@example.com>`). Set neither
+and email stays off: invitations still wait under Settings > Organizations,
+notifications still appear under Settings > Notifications. A half
+configuration stops the backend at boot. The Compose stack points both at
+Mailpit. Each person chooses under Settings > Notifications whether to be
+emailed at once, once a day, or not at all; `NOTIFICATIONS_DIGEST_HOUR_UTC`
+(default 7) and `TASK_REMINDER_HOUR_UTC` (default 6) set when the daily
+messages go.
 
 ## Google authentication
 

@@ -1,3 +1,5 @@
+import { TEXT_CARD_TOOL } from "./textCard";
+
 /**
  * The tools that WRITE to stored content rather than read it: they create
  * `documents` rows (and, in a project chat, attach them to the project) or
@@ -26,7 +28,7 @@ export const DOCUMENT_MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /** Read a tool schema's function name, whatever shape the entry arrived in. */
-function toolName(tool: unknown): string | null {
+export function toolName(tool: unknown): string | null {
   const fn = (tool as { function?: { name?: unknown } } | null)?.function;
   return typeof fn?.name === "string" ? fn.name : null;
 }
@@ -179,6 +181,7 @@ export const PLAYBOOK_TOOLS = [
 ];
 
 export const TOOLS = [
+  TEXT_CARD_TOOL,
   {
     type: "function",
     function: {

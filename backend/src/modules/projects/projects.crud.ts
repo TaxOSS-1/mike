@@ -1,6 +1,8 @@
 // Project CRUD service functions: overview, create, detail, people, update,
 // delete, and the tamper-evident export manifest.
 
+import { chunkArray } from "../../lib/arrays";
+import { recordAudit } from "../../lib/audit";
 import {
   attachActiveVersionPaths,
   attachLatestVersionNumbers,
@@ -225,9 +227,11 @@ export async function getProjectSummaries(
   return { ok: true, data: withMemory.rows };
 }
 
-// GET /projects?view=directory-search
-// Flat filename/project matches for the document picker. Search results do
-// not pretend that a partially loaded project tree is a complete result set.
+/**
+ * Find project and current-filename matches for the document picker.
+ * Page document matches within accessible project batches rather than searching
+ * a capped global version list or returning a partially loaded project tree.
+ */
 export async function searchProjectDirectory(
   db: Db,
   args: {
@@ -388,36 +392,26 @@ export async function searchProjectDirectory(
   const accessibleProjectIds = [...projectsById.keys()];
   if (accessibleProjectIds.length === 0) return { ok: true, data: [] };
 
-  const escaped = searchTerm.replace(/[%_]/g, (value) => `\\${value}`);
-  const { data: versions, error: versionsError } = await db
-    .from("document_versions")
-    .select("id")
-    .ilike("filename", `%${escaped}%`)
-    .is("deleted_at", null);
-  if (versionsError) return { ok: false, error: versionsError };
-
-  const versionIds = (versions ?? []).map((version) => version.id as string);
-  let matchedDocuments: Record<string, unknown>[] = [];
-  if (versionIds.length > 0) {
-    const { data, error } = await db
-      .from("documents")
-      .select("*")
-      .in("project_id", accessibleProjectIds)
-      .in("current_version_id", versionIds);
-    if (error) return { ok: false, error };
-    matchedDocuments = (data ?? []) as Record<string, unknown>[];
-    await attachLatestVersionNumbers(
-      db,
-      matchedDocuments as { id: string; current_version_id?: string | null }[],
-    );
-    await attachActiveVersionPaths(
-      db,
-      matchedDocuments as { id: string; current_version_id?: string | null }[],
-    );
-    await attachDocumentOwnerLabels(
-      db,
-      matchedDocuments as { user_id?: string | null }[],
-    );
+  const escaped = searchTerm.replace(/[\\%_]/g, (value) => `\\${value}`);
+  const matchedDocuments: Record<string, unknown>[] = [];
+  for (const projectIds of chunkArray(accessibleProjectIds, 50)) {
+    for (let offset = 0; ; offset += 50) {
+      const { data, error } = await db
+        .from("documents")
+        .select("*, active_version:document_versions!documents_current_version_id_fkey!inner(filename, deleted_at)")
+        .in("project_id", projectIds)
+        .ilike("active_version.filename", `%${escaped}%`)
+        .is("active_version.deleted_at", null)
+        .order("id", { ascending: true })
+        .range(offset, offset + 49);
+      if (error) return { ok: false, error };
+      const documents = (data ?? []).map(({ active_version: _version, ...document }) => document);
+      await attachLatestVersionNumbers(db, documents);
+      await attachActiveVersionPaths(db, documents);
+      await attachDocumentOwnerLabels(db, documents);
+      matchedDocuments.push(...documents);
+      if (documents.length < 50) break;
+    }
   }
 
   const normalized = searchTerm.toLowerCase();
@@ -576,11 +570,13 @@ export type CreateProjectResult =
   | { ok: false; kind: "validation"; detail: string }
   | { ok: false; kind: "db_error"; error: unknown };
 
+/** Create a project with a non-blank name in a workspace the caller may use. */
 export async function createProject(
   db: Db,
   args: {
     userId: string;
-    name: string;
+    userEmail?: string;
+    name: unknown;
     cm_number?: string;
     practice?: string;
     org_id?: string | null;
@@ -588,8 +584,9 @@ export async function createProject(
     memory_enabled?: boolean;
   },
 ): Promise<CreateProjectResult> {
-  const { userId, name, cm_number, practice, org_id, memory_enabled } = args;
-  if (!name?.trim())
+  const { userId, userEmail, name, cm_number, practice, org_id, memory_enabled } =
+    args;
+  if (typeof name !== "string" || !name.trim())
     return { ok: false, kind: "validation", detail: "name is required" };
   if (memory_enabled !== undefined && typeof memory_enabled !== "boolean") {
     return {
@@ -653,6 +650,18 @@ export async function createProject(
     if (visibilityError)
       return { ok: false, kind: "db_error", error: visibilityError };
   }
+  // The project's own audit trail starts here, so an organization's admins can
+  // see who opened which matter and how (private or organization-wide).
+  await recordAudit(db, {
+    userId,
+    userEmail,
+    orgId: resolvedOrgId,
+    action: "project.created",
+    title: name.trim(),
+    surface: "project",
+    projectId: (data as { id: string }).id,
+    detail: { org_id: resolvedOrgId, visibility },
+  });
   return {
     ok: true,
     project: {
@@ -838,6 +847,7 @@ export type UpdateProjectResult =
   | { ok: false; kind: "validation"; detail: string }
   | { ok: false; kind: "db_error"; error: unknown };
 
+/** Validate project metadata and apply only changes allowed by the caller's role. */
 export async function updateProject(
   db: Db,
   args: {
@@ -849,7 +859,11 @@ export async function updateProject(
 ): Promise<UpdateProjectResult> {
   const { projectId, userId, userEmail, body } = args;
   const updates: Record<string, unknown> = {};
-  if (body.name != null) updates.name = body.name;
+  if ("name" in body) {
+    if (typeof body.name !== "string" || !body.name.trim())
+      return { ok: false, kind: "validation", detail: "name must be a non-empty string" };
+    updates.name = body.name.trim();
+  }
   if (body.cm_number != null) updates.cm_number = body.cm_number;
   if ("practice" in body) {
     updates.practice = normalizeOptionalString(body.practice);
@@ -888,6 +902,42 @@ export async function updateProject(
     .select("*")
     .single();
   if (error || !data) return { ok: false, kind: "not_found" };
+
+  // Opening or closing a project is an access decision and gets its own
+  // event; renames and metadata edits share one, naming only the fields.
+  const updated = data as { name?: string | null };
+  const previousVisibility = access.project.visibility ?? "private";
+  const changedFields = Object.keys(updates).filter(
+    (field) => field !== "visibility",
+  );
+  if (updates.visibility && updates.visibility !== previousVisibility) {
+    await recordAudit(db, {
+      userId,
+      userEmail,
+      orgId: access.project.org_id ?? null,
+      action: "project.visibility_changed",
+      title: updated.name ?? null,
+      surface: "project",
+      projectId,
+      detail: {
+        org_id: access.project.org_id ?? null,
+        previous_visibility: previousVisibility,
+        visibility: updates.visibility,
+      },
+    });
+  }
+  if (changedFields.length > 0) {
+    await recordAudit(db, {
+      userId,
+      userEmail,
+      orgId: access.project.org_id ?? null,
+      action: "project.updated",
+      title: updated.name ?? null,
+      surface: "project",
+      projectId,
+      detail: { org_id: access.project.org_id ?? null, fields: changedFields },
+    });
+  }
 
   const [{ data: docs }, { data: folderData }] = await Promise.all([
     db.from("documents").select("*").eq("project_id", projectId).order("created_at", { ascending: true }),
@@ -941,15 +991,47 @@ export async function deleteProject(
       kind: "forbidden",
       detail: "Only a project owner can delete this project.",
     };
+  // The name is read before the cascade removes it; the event itself is
+  // written after, so a refused or failed delete leaves no "deleted" entry.
+  // org_id travels in the event because the trigger that derives it from
+  // project_id finds no project any more.
+  const name = await projectNameForAudit(db, projectId);
   try {
     // Delete by id, not by owner: the capability check above is what
     // authorises this, and an organization project may have no creator left
     // to scope by (user_id goes NULL when that account is deleted).
     const deletedCount = await deleteProjectsByIds(db, [projectId]);
     if (deletedCount === 0) return { ok: false, kind: "not_found" };
-    return { ok: true };
   } catch (err) {
     return { ok: false, kind: "error", error: err };
+  }
+  await recordAudit(db, {
+    userId,
+    userEmail,
+    orgId: access.project.org_id ?? null,
+    action: "project.deleted",
+    title: name,
+    surface: "project",
+    projectId,
+    detail: { org_id: access.project.org_id ?? null },
+  });
+  return { ok: true };
+}
+
+async function projectNameForAudit(
+  db: Db,
+  projectId: string,
+): Promise<string | null> {
+  try {
+    const { data } = await db
+      .from("projects")
+      .select("name")
+      .eq("id", projectId)
+      .maybeSingle();
+    const name = (data as { name?: unknown } | null)?.name;
+    return typeof name === "string" && name.trim() ? name : null;
+  } catch {
+    return null;
   }
 }
 

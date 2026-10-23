@@ -256,8 +256,9 @@ orgsRouter.delete("/:orgId/logo", requireOrgAuth, asyncRoute(async (req, res) =>
 }));
 
 // DELETE /orgs/:orgId/data/:kind — permanently delete one kind of content
-// across the organization (owner only): chats, tabular-reviews, projects or
-// memories. The organization-level twin of the DELETE /user/* routes.
+// across the organization (owner only): chats, tabular-reviews, projects,
+// memories or playbooks. The organization-level twin of the DELETE /user/*
+// routes.
 orgsRouter.delete(
     "/:orgId/data/:kind",
     requireOrgAuth,
@@ -420,12 +421,9 @@ orgsRouter.delete(
     }),
 );
 
-// POST /orgs/:orgId/invitations/:invitationId/resend — refresh expiry.
-//
-// The repository has no outbound email infrastructure, so "resend" moves the
-// expiry window rather than re-delivering a message; the invitation surfaces
-// in-app through GET /user/invitations either way. Wiring a mailer in would
-// mean adding a dependency this PR deliberately does not take on.
+// POST /orgs/:orgId/invitations/:invitationId/resend — refresh expiry and,
+// when the deployment has SMTP configured (lib/mail), send the message again.
+// The invitation surfaces in-app through GET /user/invitations either way.
 orgsRouter.post(
     "/:orgId/invitations/:invitationId/resend",
     requireOrgAuth,

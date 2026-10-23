@@ -1,3 +1,8 @@
+import {
+  parseTrustedPrivateOrigins,
+  TRUSTED_PRIVATE_ORIGINS_ENV,
+} from "./mcp/trustedOrigins";
+
 function required(env: NodeJS.ProcessEnv, names: readonly string[]): string {
   for (const name of names) {
     const value = env[name]?.trim();
@@ -196,6 +201,29 @@ export function authHandoffEncryptionSecret(
  * usable. This deliberately lives outside app.ts so unit tests can import the
  * Express app without supplying production credentials.
  */
+/**
+ * The outbound-egress exception list, checked at boot so a malformed or
+ * forbidden entry stops the process instead of silently changing which
+ * private hosts the connector guard lets through.
+ */
+export function validateEgressConfiguration(
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const { errors } = parseTrustedPrivateOrigins(
+    env[TRUSTED_PRIVATE_ORIGINS_ENV],
+  );
+  if (errors.length > 0) {
+    throw Object.assign(
+      new Error(
+        `Backend egress configuration is invalid:\n- ${errors.join("\n- ")}\n\n` +
+          `${TRUSTED_PRIVATE_ORIGINS_ENV} lists exact origins (scheme://host[:port]) ` +
+          "separated by commas; see docs/connectors.md.",
+      ),
+      { code: "ERR_INVALID_EGRESS_CONFIG" },
+    );
+  }
+}
+
 export function validateRuntimeConfiguration(
   env: NodeJS.ProcessEnv = process.env,
 ): void {

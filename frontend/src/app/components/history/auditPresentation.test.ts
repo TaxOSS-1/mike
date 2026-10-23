@@ -103,6 +103,27 @@ describe("audit event presentation", () => {
       context: "Acme · Acquisition",
     });
   });
+  it("labels playbook activity like the other surfaces instead of generating labels", () => {
+    const run = {
+      ...event,
+      action: "playbook.run",
+      title: "negotiation-guide",
+      surface: "playbooks",
+      detail: { playbook_id: "pb-1", run_id: "run-1", scope: "full" },
+    };
+    expect(auditAction(run)).toBe("Playbook review run");
+    expect(auditSubject(run).type).toBe("Playbook run");
+    expect(auditSubject({ ...run, action: "playbook.replaced" }).type).toBe(
+      "Playbook",
+    );
+    const failed = { ...run, status: "failed" };
+    expect(auditAction(failed)).toBe("Playbook review");
+    expect(auditSummary(failed, false)).toBe("Playbook review failed.");
+    expect(auditAction({ ...run, action: "playbook.run.deleted" })).toBe(
+      "Playbook run deleted",
+    );
+  });
+
   it("keeps failed actions from reading as successful changes", () => {
     const failed = { ...event, action: "document.uploaded", status: "failed" };
     expect(auditAction(failed)).toBe("Document upload");
@@ -158,5 +179,68 @@ describe("audit event presentation", () => {
         timeZoneName: "short",
       }),
     );
+  });
+});
+
+describe("project lifecycle and sharing events", () => {
+  const project = {
+    ...event,
+    action: "project.created",
+    title: "Acquisition",
+    surface: "project",
+    project_id: "p1",
+    detail: { org_id: "org", visibility: "organization" },
+  };
+
+  it("labels project events and names the project, never a person", () => {
+    expect(auditAction(project)).toBe("Project created");
+    expect(auditSubject({ ...project, affected_user_display_name: "Jamie Morgan" })).toEqual({
+      type: "Project",
+      name: "Acquisition",
+      context: "Project",
+    });
+    expect(auditDetailFields(project)).toEqual([
+      { label: "Visibility", value: "Organization" },
+    ]);
+    expect(auditSummary(project, false)).toBe("Alex Chen created Acquisition.");
+    expect(auditAction({ ...project, status: "failed" })).toBe("Project creation");
+  });
+
+  it("shows a visibility change as before and after, and renamed fields by name", () => {
+    expect(
+      auditDetailFields({
+        ...project,
+        action: "project.visibility_changed",
+        detail: { previous_visibility: "private", visibility: "organization" },
+      }),
+    ).toEqual([{ label: "Visibility", value: "Private → Organization" }]);
+    expect(
+      auditDetailFields({
+        ...project,
+        action: "project.updated",
+        detail: { fields: ["name", "cm_number"] },
+      }),
+    ).toEqual([{ label: "Changed", value: "Name, Cm Number" }]);
+    expect(auditAction({ ...project, action: "project.deleted" })).toBe("Project deleted");
+  });
+
+  it("treats the person a project is shared with as the recipient, with their role", () => {
+    const shared = {
+      ...project,
+      action: "project.access.granted",
+      title: "jamie@example.com",
+      detail: { target_email: "jamie@example.com", target_user_id: "target-id", role: "editor" },
+      affected_user_display_name: "Jamie Morgan",
+    };
+    expect(auditAction(shared)).toBe("Project shared");
+    expect(auditSubject(shared)).toEqual({ type: "Recipient", name: "Jamie Morgan", context: "Project" });
+    expect(auditSubjectEmail(shared)).toBe("jamie@example.com");
+    expect(auditDetailFields(shared)).toEqual([{ label: "Role", value: "Editor" }]);
+    expect(auditSummary(shared, false)).toBe("Alex Chen shared the project with Jamie Morgan.");
+    const revoked = { ...shared, action: "project.access.revoked", detail: { target_email: "jamie@example.com" } };
+    expect(auditAction(revoked)).toBe("Project access removed");
+    expect(auditDetailFields(revoked)).toEqual([]);
+    expect(auditSummary(revoked, true)).toBe("You removed project access for Jamie Morgan.");
+    expect(auditDestination(revoked)).toEqual({ href: "/projects/p1", label: "Open project" });
   });
 });

@@ -501,3 +501,105 @@ describe("POST /single-documents/:documentId/versions/from-document", () => {
         expect(res.body.detail).toBe("Document not found");
     });
 });
+
+// ---------------------------------------------------------------------------
+// PATCH /single-documents/:documentId/versions/:versionId/review
+//
+// Draft and in_review are content work; approved is a sign-off and sits with
+// the project's Owners. A Viewer is refused by name, not told the version is
+// gone, and a caller with no verdict still gets 404.
+// ---------------------------------------------------------------------------
+
+describe("PATCH /single-documents/:documentId/versions/:versionId/review", () => {
+    const VR = "22222222-2222-4222-8222-222222222231";
+
+    beforeEach(() => {
+        updates.length = 0;
+        errors = {};
+        rows = {
+            documents: [
+                { id: DOC, user_id: "u2", project_id: "p1", org_id: "o1", workflow_id: null, current_version_id: VR },
+            ],
+            document_versions: [
+                {
+                    id: VR,
+                    document_id: DOC,
+                    version_number: 3,
+                    filename: "return.pdf",
+                    created_at: "2026-09-03T00:00:00Z",
+                    deleted_at: null,
+                    review_state: "draft",
+                },
+            ],
+        };
+    });
+
+    it("lets an editor send the version into review and returns the row", async () => {
+        ensureDocAccess.mockResolvedValue(access("editor", false));
+        const res = await request(app)
+            .patch(`/single-documents/${DOC}/versions/${VR}/review`)
+            .set(...AUTH)
+            .send({ state: "in_review", note: "Please check the prepayments." });
+
+        expect(res.status).toBe(200);
+        expect(res.body).toMatchObject({
+            id: VR,
+            review_state: "in_review",
+            reviewed_by: "u1",
+            review_note: "Please check the prepayments.",
+        });
+        expect(updates.map((u) => u.table)).toEqual(["document_versions"]);
+    });
+
+    it("refuses an editor's approval with 403 and leaves the row alone", async () => {
+        ensureDocAccess.mockResolvedValue(access("editor", false));
+        const res = await request(app)
+            .patch(`/single-documents/${DOC}/versions/${VR}/review`)
+            .set(...AUTH)
+            .send({ state: "approved" });
+
+        expect(res.status).toBe(403);
+        expect(res.body.detail).toBe("Only a project owner can approve a version.");
+        expect(updates).toEqual([]);
+        expect(rows.document_versions[0].review_state).toBe("draft");
+    });
+
+    it("lets an owner approve", async () => {
+        ensureDocAccess.mockResolvedValue(access("owner", false));
+        const res = await request(app)
+            .patch(`/single-documents/${DOC}/versions/${VR}/review`)
+            .set(...AUTH)
+            .send({ state: "approved" });
+
+        expect(res.status).toBe(200);
+        expect(res.body.review_state).toBe("approved");
+    });
+
+    it("answers 400 for an unknown state, 403 for a viewer and 404 without a verdict", async () => {
+        ensureDocAccess.mockResolvedValue(access("owner", false));
+        expect(
+            (
+                await request(app)
+                    .patch(`/single-documents/${DOC}/versions/${VR}/review`)
+                    .set(...AUTH)
+                    .send({ state: "signed" })
+            ).status,
+        ).toBe(400);
+
+        ensureDocAccess.mockResolvedValue(access("viewer", false));
+        const viewer = await request(app)
+            .patch(`/single-documents/${DOC}/versions/${VR}/review`)
+            .set(...AUTH)
+            .send({ state: "draft" });
+        expect(viewer.status).toBe(403);
+
+        ensureDocAccess.mockResolvedValue({ ok: false });
+        const stranger = await request(app)
+            .patch(`/single-documents/${DOC}/versions/${VR}/review`)
+            .set(...AUTH)
+            .send({ state: "draft" });
+        expect(stranger.status).toBe(404);
+        expect(stranger.body.detail).toBe("Document not found");
+        expect(updates).toEqual([]);
+    });
+});

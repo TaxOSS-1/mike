@@ -3,6 +3,7 @@ import { normalizeOptionalModelPreference, normalizeReasoningLevel } from "../..
 import { type ApiKeyStatus } from "./user.apiKeyStore";
 import { ROUTER_SLUGS, type RouterModelSelections } from "../../lib/routerModels";
 import { UserProfileRow, MONTHLY_CREDIT_LIMIT } from "./user.profile.storage";
+import { courtlistenerBulkDataEnabled } from "../../lib/courtlistener";
 
 import { ROUTER_PROFILE_FIELDS } from "./user.profile.routerPreferences";
 
@@ -48,6 +49,11 @@ export function serializeProfile(
             row.memory_curator_model,
             routerModels,
         ),
+        subagentModel: normalizeOptionalModelPreference(
+            row.subagent_model,
+            routerModels,
+        ),
+        subagentReasoning: normalizeReasoningLevel(row.subagent_reasoning),
         lastSelectedChatModel: normalizeOptionalModelPreference(
             row.last_selected_chat_model,
             routerModels,
@@ -56,8 +62,9 @@ export function serializeProfile(
             normalizeReasoningLevel(row.last_selected_reasoning_level) ??
             "high",
         mfaOnLogin: row.mfa_on_login === true,
-        legalResearchUs: row.legal_research_us !== false,
+        courtlistenerBulkData: courtlistenerBulkDataEnabled(),
         quickActionsVisible: row.quick_actions_visible !== false,
+        responseDetailsVisible: row.response_details_visible === true,
         darkMode: row.dark_mode === true,
         projectMemoryDefault: row.project_memory_default !== false,
         ...Object.fromEntries(

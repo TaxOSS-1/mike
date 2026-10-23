@@ -54,10 +54,22 @@ create table if not exists public.user_profiles (
   memory_curator_model text,
   last_selected_chat_model text,
   last_selected_reasoning_level text check (last_selected_reasoning_level in ('none', 'low', 'medium', 'high', 'xhigh', 'max')),
+  subagent_model text,
+  subagent_reasoning text check (subagent_reasoning in ('none', 'low', 'medium', 'high', 'xhigh', 'max')),
   quote_model text,
   mfa_on_login boolean not null default false,
+  -- How notifications reach the person by email when SMTP is configured
+  -- (20261023_04): at once, in a daily digest, or never.
+  notification_email_mode text not null default 'immediate'
+    constraint user_profiles_notification_email_mode_check
+    check (notification_email_mode in ('immediate', 'daily', 'off')),
+  -- Superseded by user_courtlistener_connections.enabled (20261022_01) and
+  -- no longer read; kept for a backend that predates that migration.
   legal_research_us boolean not null default true,
   quick_actions_visible boolean not null default true,
+  -- Whether each response and subagent shows the model, reasoning effort and
+  -- token count it used (Settings > Features).
+  response_details_visible boolean not null default false,
   dark_mode boolean not null default false,
   -- Whether projects this user creates start with shared memory enabled. Any
   -- project owner can still turn a given project's memory on or off later.
@@ -76,6 +88,14 @@ create table if not exists public.user_profiles (
     check (
       jsonb_typeof(response_style) = 'object'
       and octet_length(response_style::text) <= 2000
+    ),
+  -- Web search preferences from Settings > Features, stored like
+  -- response_style: only the choices that differ from the default.
+  web_search jsonb not null default '{}'::jsonb
+    constraint user_profiles_web_search_check
+    check (
+      jsonb_typeof(web_search) = 'object'
+      and octet_length(web_search::text) <= 1000
     ),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -203,6 +223,30 @@ $$;
 revoke all on function public.merge_user_response_style(uuid, jsonb)
   from public, anon, authenticated;
 grant execute on function public.merge_user_response_style(uuid, jsonb)
+  to service_role;
+
+-- Merges a change into one user's web search settings and returns the result,
+-- or null when the user has no profile. A null value in the patch removes that
+-- key, which returns the setting to its default.
+create or replace function public.merge_user_web_search(
+  p_user_id uuid,
+  p_patch jsonb
+)
+returns jsonb
+language sql
+set search_path = ''
+as $$
+  update public.user_profiles
+     set web_search = jsonb_strip_nulls(web_search || p_patch),
+         updated_at = now()
+   where user_id = p_user_id
+     and jsonb_typeof(p_patch) = 'object'
+  returning web_search;
+$$;
+
+revoke all on function public.merge_user_web_search(uuid, jsonb)
+  from public, anon, authenticated;
+grant execute on function public.merge_user_web_search(uuid, jsonb)
   to service_role;
 
 create or replace function public.handle_user_email_updated()
@@ -592,7 +636,7 @@ $$;
 create table if not exists public.user_api_keys (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
-  provider text not null check (provider in ('claude', 'gemini', 'openai', 'mistral', 'openrouter', 'vercel', 'opencode-go', 'bedrock', 'azure', 'azure-foundry', 'vertex', 'xai', 'custom', 'courtlistener')),
+  provider text not null check (provider in ('claude', 'gemini', 'openai', 'mistral', 'openrouter', 'vercel', 'opencode-go', 'bedrock', 'azure', 'azure-foundry', 'vertex', 'xai', 'custom', 'courtlistener', 'brave', 'tavily', 'deepseek')),
   encrypted_key text not null,
   iv text not null,
   auth_tag text not null,
@@ -630,7 +674,7 @@ create table if not exists public.org_api_keys (
   org_id uuid not null references public.organizations(id) on delete cascade,
   provider text not null
     constraint org_api_keys_provider_check
-    check (provider in ('claude', 'gemini', 'openai', 'mistral', 'openrouter', 'vercel', 'opencode-go', 'bedrock', 'azure', 'azure-foundry', 'vertex', 'xai', 'custom', 'courtlistener')),
+    check (provider in ('claude', 'gemini', 'openai', 'mistral', 'openrouter', 'vercel', 'opencode-go', 'bedrock', 'azure', 'azure-foundry', 'vertex', 'xai', 'custom', 'courtlistener', 'brave', 'tavily', 'deepseek')),
   encrypted_key text not null,
   iv text not null,
   auth_tag text not null,
@@ -844,6 +888,9 @@ $$;
 create table if not exists public.user_mcp_connectors (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
+  -- The workspace this connection is for: an organization, or null for
+  -- Personal. Tied to the membership, so it goes when the person leaves.
+  org_id uuid,
   name text not null,
   transport text not null default 'streamable_http'
     check (transport in ('streamable_http')),
@@ -860,11 +907,16 @@ create table if not exists public.user_mcp_connectors (
   auth_config_iv text,
   auth_config_tag text,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint user_mcp_connectors_workspace_member_fkey
+    foreign key (org_id, user_id)
+    references public.org_members(org_id, user_id) on delete cascade
 );
 
-create index if not exists idx_user_mcp_connectors_user
-  on public.user_mcp_connectors(user_id);
+create index if not exists idx_user_mcp_connectors_user_workspace
+  on public.user_mcp_connectors(user_id, org_id);
+create index if not exists idx_user_mcp_connectors_org
+  on public.user_mcp_connectors(org_id) where org_id is not null;
 
 alter table public.user_mcp_connectors enable row level security;
 
@@ -1279,6 +1331,12 @@ create table if not exists public.document_versions (
   deleted_at timestamptz,
   deleted_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now(),
+  -- Review state of these bytes: a new version starts as a draft again.
+  -- reviewed_by/reviewed_at record who set the current state and when.
+  review_state text not null default 'draft',
+  reviewed_by uuid references auth.users(id) on delete set null,
+  reviewed_at timestamptz,
+  review_note text,
   constraint document_versions_source_check
     check (source = any (array[
       'upload'::text,
@@ -1287,7 +1345,11 @@ create table if not exists public.document_versions (
       'user_accept'::text,
       'user_reject'::text,
       'generated'::text
-    ]))
+    ])),
+  constraint document_versions_review_state_check
+    check (review_state in ('draft', 'in_review', 'approved')),
+  constraint document_versions_review_note_check
+    check (review_note is null or char_length(review_note) <= 2000)
 );
 
 create index if not exists document_versions_document_id_idx
@@ -1296,6 +1358,88 @@ create index if not exists document_versions_document_id_idx
 create index if not exists document_versions_active_document_id_idx
   on public.document_versions(document_id, created_at desc)
   where deleted_at is null;
+
+-- Tasks on a project: a title, an owner, a due date and a status, optionally
+-- tied to one document (20261023_03). The assignee must already have access
+-- to the project; assignee_email keeps the task legible after the account is
+-- gone, and created_by is provenance only, like projects.user_id.
+create table if not exists public.project_tasks (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.projects(id) on delete cascade,
+  document_id uuid references public.documents(id) on delete set null,
+  title text not null,
+  description text,
+  status text not null default 'open',
+  assignee_user_id uuid references auth.users(id) on delete set null,
+  assignee_email text,
+  due_on date,
+  created_by uuid references auth.users(id) on delete set null,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint project_tasks_title_check
+    check (char_length(title) between 1 and 300),
+  constraint project_tasks_description_check
+    check (description is null or char_length(description) <= 4000),
+  constraint project_tasks_status_check
+    check (status in ('open', 'in_progress', 'done', 'cancelled')),
+  constraint project_tasks_assignee_email_check
+    check (assignee_email is null or assignee_email = lower(assignee_email))
+);
+
+create index if not exists project_tasks_project_status_due_idx
+  on public.project_tasks(project_id, status, due_on);
+create index if not exists project_tasks_assignee_open_idx
+  on public.project_tasks(assignee_user_id, due_on)
+  where status in ('open', 'in_progress');
+create index if not exists project_tasks_document_idx
+  on public.project_tasks(document_id)
+  where document_id is not null;
+
+alter table public.project_tasks enable row level security;
+revoke all on public.project_tasks from anon, authenticated;
+grant select, insert, update, delete on public.project_tasks to service_role;
+
+-- In-app notifications, emailed per person at once, daily or never
+-- (20261023_04). org_id has no foreign key, like audit_events: the row
+-- outlives the organization. subject_type/subject_id let reminders about the
+-- same thing be rate-limited.
+create table if not exists public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  org_id uuid,
+  kind text not null,
+  title text not null,
+  body text,
+  href text,
+  project_id uuid,
+  document_id uuid,
+  subject_type text,
+  subject_id text,
+  read_at timestamptz,
+  emailed_at timestamptz,
+  created_at timestamptz not null default now(),
+  constraint notifications_kind_check check (char_length(kind) between 1 and 64),
+  constraint notifications_title_check check (char_length(title) between 1 and 300),
+  constraint notifications_body_check check (body is null or char_length(body) <= 2000),
+  constraint notifications_href_check check (href is null or char_length(href) <= 500)
+);
+
+create index if not exists notifications_user_created_idx
+  on public.notifications(user_id, created_at desc);
+create index if not exists notifications_user_unread_idx
+  on public.notifications(user_id, created_at desc)
+  where read_at is null;
+create index if not exists notifications_unemailed_idx
+  on public.notifications(user_id, created_at)
+  where emailed_at is null;
+create index if not exists notifications_subject_idx
+  on public.notifications(user_id, kind, subject_id, created_at desc)
+  where subject_id is not null;
+
+alter table public.notifications enable row level security;
+revoke all on public.notifications from anon, authenticated;
+grant select, insert, update, delete on public.notifications to service_role;
 
 create index if not exists document_versions_doc_vnum_idx
   on public.document_versions(document_id, version_number);
@@ -2727,6 +2871,32 @@ create index if not exists chat_messages_chat_created_id_idx
 create index if not exists chat_messages_author_idx
   on public.chat_messages(author_user_id) where author_user_id is not null;
 
+-- What a subagent did in a chat answer, so the assistant can continue it in a
+-- later turn without the subagent redoing its reading. Only the backend reads
+-- or writes these rows; they expire after 30 days and go with their chat,
+-- answer or account.
+create table if not exists public.chat_subagent_runs (
+  id uuid primary key default gen_random_uuid(),
+  chat_id uuid not null references public.chats(id) on delete cascade,
+  message_id uuid not null references public.chat_messages(id) on delete cascade,
+  delegation_id text not null check (length(delegation_id) between 1 and 100),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  status text not null check (status in ('completed', 'incomplete', 'needs_input')),
+  transcript jsonb not null check (octet_length(transcript::text) <= 400000),
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null default now() + interval '30 days',
+  unique (chat_id, delegation_id)
+);
+
+create index if not exists chat_subagent_runs_user_expiry
+  on public.chat_subagent_runs(user_id, expires_at);
+create index if not exists chat_subagent_runs_message
+  on public.chat_subagent_runs(message_id);
+
+alter table public.chat_subagent_runs enable row level security;
+revoke all on public.chat_subagent_runs from anon, authenticated;
+grant all on public.chat_subagent_runs to service_role;
+
 create or replace function public.set_chat_updated_at()
 returns trigger
 language plpgsql
@@ -2921,6 +3091,7 @@ create table if not exists public.word_chat_messages (
   content jsonb,
   files jsonb,
   workflow jsonb,
+  playbook jsonb,
   citations jsonb,
   created_at timestamptz not null default now()
 );
@@ -5501,6 +5672,9 @@ create table if not exists public.playbook_runs (
   model text not null,
   document_name text,
   review_mode text not null,
+  -- "issues" reported only what needs attention; "full" reviewed every rule.
+  review_scope text not null default 'full'
+    constraint playbook_runs_review_scope_check check (review_scope in ('full', 'issues')),
   status text not null,
   summary text,
   findings_json jsonb,
@@ -5513,6 +5687,8 @@ create table if not exists public.playbook_runs (
 create index if not exists idx_playbook_runs_playbook_started
   on public.playbook_runs(playbook_id, started_at desc);
 create index if not exists idx_playbook_runs_document on public.playbook_runs(document_id);
+create index if not exists idx_playbook_runs_user_started
+  on public.playbook_runs(user_id, started_at desc);
 alter table public.playbook_runs enable row level security;
 
 create table if not exists public.playbook_imports (
@@ -5528,10 +5704,20 @@ create table if not exists public.playbook_imports (
   started_at timestamptz not null,
   completed_at timestamptz,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  org_id uuid references public.organizations(id) on delete cascade,
+  -- A replacement's target version: the playbook's updated_at when the
+  -- import began. The compiled content is saved only over that version.
+  target_updated_at timestamptz
 );
 create index if not exists idx_playbook_imports_user_started
   on public.playbook_imports(user_id, started_at desc);
+create index if not exists idx_playbook_imports_user_status
+  on public.playbook_imports(user_id, status, started_at desc);
+-- Content writes are refused while a replacement of the playbook runs.
+create index if not exists idx_playbook_imports_running_playbook
+  on public.playbook_imports(playbook_id)
+  where status = 'running';
 alter table public.playbook_imports enable row level security;
 
 -- Supplementary documents a playbook's rules can refer to: copies the
@@ -8648,7 +8834,11 @@ grant execute on function public.document_cache_writer_active(text[])
 -- backend (service key) can read the encrypted tokens.
 
 CREATE TABLE IF NOT EXISTS public.user_google_drive_tokens (
-  user_id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  -- One grant per person per workspace: an organization, or null for
+  -- Personal (20261022_01).
+  org_id uuid,
   encrypted_access_token text,
   access_token_iv text,
   access_token_tag text,
@@ -8665,8 +8855,17 @@ CREATE TABLE IF NOT EXISTS public.user_google_drive_tokens (
   -- The Google account this connection signed in as; display only.
   account_email text,
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT user_google_drive_tokens_pkey PRIMARY KEY (id),
+  CONSTRAINT user_google_drive_tokens_workspace_key
+    UNIQUE NULLS NOT DISTINCT (user_id, org_id),
+  CONSTRAINT user_google_drive_tokens_workspace_member_fkey
+    FOREIGN KEY (org_id, user_id)
+    REFERENCES public.org_members(org_id, user_id) ON DELETE CASCADE
 );
+
+CREATE INDEX IF NOT EXISTS idx_user_google_drive_tokens_org
+  ON public.user_google_drive_tokens(org_id) WHERE org_id IS NOT NULL;
 
 ALTER TABLE public.user_google_drive_tokens ENABLE ROW LEVEL SECURITY;
 
@@ -8689,26 +8888,29 @@ create or replace function public.complete_google_drive_oauth(p_state_hash text,
 returns boolean language plpgsql security definer set search_path = '' as $$
 declare
   v_user_id uuid;
+  v_org_id uuid;
 begin
   select user_id into v_user_id from public.google_workspace_oauth_states
     where state_hash = p_state_hash and provider = 'google-drive';
   if not found then return false; end if;
   perform 1 from auth.users where id = v_user_id for update;
   if not found then return false; end if;
+  -- The workspace the sign-in was started in.
   delete from public.google_workspace_oauth_states
     where state_hash = p_state_hash and provider = 'google-drive'
-      and user_id = v_user_id and expires_at > now();
+      and user_id = v_user_id and expires_at > now()
+    returning org_id into v_org_id;
   if not found then return false; end if;
   insert into public.user_google_drive_tokens (
-    user_id, account_email, encrypted_access_token, access_token_iv, access_token_tag,
+    user_id, org_id, account_email, encrypted_access_token, access_token_iv, access_token_tag,
     encrypted_refresh_token, refresh_token_iv, refresh_token_tag, scope, expires_at
   ) values (
-    v_user_id, p_tokens->>'account_email', p_tokens->>'encrypted_access_token',
+    v_user_id, v_org_id, p_tokens->>'account_email', p_tokens->>'encrypted_access_token',
     p_tokens->>'access_token_iv', p_tokens->>'access_token_tag',
     p_tokens->>'encrypted_refresh_token', p_tokens->>'refresh_token_iv',
     p_tokens->>'refresh_token_tag', p_tokens->>'scope',
     (p_tokens->>'expires_at')::timestamptz
-  ) on conflict (user_id) do update set
+  ) on conflict (user_id, org_id) do update set
     grant_id = gen_random_uuid(),
     account_email = excluded.account_email,
     encrypted_access_token = excluded.encrypted_access_token,
@@ -8722,25 +8924,30 @@ $$;
 revoke all on function public.complete_google_drive_oauth(text, jsonb) from public, anon, authenticated;
 grant execute on function public.complete_google_drive_oauth(text, jsonb) to service_role;
 
-create or replace function public.disconnect_google_drive(p_user_id uuid)
+create or replace function public.disconnect_google_drive(p_user_id uuid, p_org_id uuid default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_token jsonb;
 begin
   perform 1 from auth.users where id = p_user_id for update;
   if not found then return null; end if;
   delete from public.google_workspace_oauth_states
-    where user_id = p_user_id and provider = 'google-drive';
-  delete from public.user_google_drive_tokens where user_id = p_user_id
+    where user_id = p_user_id and provider = 'google-drive'
+      and org_id is not distinct from p_org_id;
+  delete from public.user_google_drive_tokens
+    where user_id = p_user_id and org_id is not distinct from p_org_id
     returning to_jsonb(user_google_drive_tokens) into v_token;
   return v_token;
 end;
 $$;
-revoke all on function public.disconnect_google_drive(uuid) from public, anon, authenticated;
-grant execute on function public.disconnect_google_drive(uuid) to service_role;
+revoke all on function public.disconnect_google_drive(uuid, uuid) from public, anon, authenticated;
+grant execute on function public.disconnect_google_drive(uuid, uuid) to service_role;
 -- Migration date: 2026-09-22
 -- Independent Gmail/Calendar grants. Connector settings survive reconnects.
 create table if not exists public.user_google_workspace_tokens (
+  id uuid not null default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
+  -- An organization, or null for Personal (20261022_01).
+  org_id uuid,
   provider text not null check (provider in ('gmail', 'google-calendar')),
   grant_id uuid not null default gen_random_uuid(),
   account_email text not null, account_id text not null,
@@ -8752,16 +8959,28 @@ create table if not exists public.user_google_workspace_tokens (
   require_write_approval boolean not null default false,
   read_only boolean not null default false,
   disabled_tools text[] not null default '{}',
-  primary key (user_id, provider)
+  constraint user_google_workspace_tokens_pkey primary key (id),
+  constraint user_google_workspace_tokens_workspace_key
+    unique nulls not distinct (user_id, org_id, provider),
+  constraint user_google_workspace_tokens_workspace_member_fkey
+    foreign key (org_id, user_id)
+    references public.org_members(org_id, user_id) on delete cascade
 );
+create index if not exists idx_user_google_workspace_tokens_org
+  on public.user_google_workspace_tokens(org_id) where org_id is not null;
 create table if not exists public.google_workspace_oauth_states (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
+  -- The workspace the sign-in was started in; the callback completes its grant.
+  org_id uuid,
   -- Every Google connection's pending OAuth sign-ins, including Drive's.
   provider text not null check (provider in ('gmail', 'google-calendar', 'google-drive')),
   state_hash text not null unique,
   encrypted_state_config text not null, state_config_iv text not null, state_config_tag text not null,
-  expires_at timestamptz not null
+  expires_at timestamptz not null,
+  constraint google_workspace_oauth_states_workspace_member_fkey
+    foreign key (org_id, user_id)
+    references public.org_members(org_id, user_id) on delete cascade
 );
 create index if not exists google_workspace_states_owner on public.google_workspace_oauth_states(user_id, provider);
 alter table public.user_google_workspace_tokens enable row level security;
@@ -8779,9 +8998,9 @@ begin
   if not found then return false; end if;
   delete from public.google_workspace_oauth_states where state_hash = p_state_hash and provider = p_provider and expires_at > now() returning * into v_state;
   if not found then return false; end if;
-  insert into public.user_google_workspace_tokens(user_id, provider, account_email, account_id, encrypted_access_token, access_token_iv, access_token_tag, encrypted_refresh_token, refresh_token_iv, refresh_token_tag, scope, expires_at, write_enabled)
-  values (v_state.user_id, p_provider, p_tokens->>'account_email', p_tokens->>'account_id', p_tokens->>'encrypted_access_token', p_tokens->>'access_token_iv', p_tokens->>'access_token_tag', p_tokens->>'encrypted_refresh_token', p_tokens->>'refresh_token_iv', p_tokens->>'refresh_token_tag', p_tokens->>'scope', (p_tokens->>'expires_at')::timestamptz, coalesce((p_tokens->>'write_enabled')::boolean, false))
-  on conflict (user_id, provider) do update set
+  insert into public.user_google_workspace_tokens(user_id, org_id, provider, account_email, account_id, encrypted_access_token, access_token_iv, access_token_tag, encrypted_refresh_token, refresh_token_iv, refresh_token_tag, scope, expires_at, write_enabled)
+  values (v_state.user_id, v_state.org_id, p_provider, p_tokens->>'account_email', p_tokens->>'account_id', p_tokens->>'encrypted_access_token', p_tokens->>'access_token_iv', p_tokens->>'access_token_tag', p_tokens->>'encrypted_refresh_token', p_tokens->>'refresh_token_iv', p_tokens->>'refresh_token_tag', p_tokens->>'scope', (p_tokens->>'expires_at')::timestamptz, coalesce((p_tokens->>'write_enabled')::boolean, false))
+  on conflict (user_id, org_id, provider) do update set
     grant_id = gen_random_uuid(), account_email = excluded.account_email, account_id = excluded.account_id, encrypted_access_token = excluded.encrypted_access_token,
     access_token_iv = excluded.access_token_iv, access_token_tag = excluded.access_token_tag,
     encrypted_refresh_token = excluded.encrypted_refresh_token, refresh_token_iv = excluded.refresh_token_iv, refresh_token_tag = excluded.refresh_token_tag,
@@ -8790,18 +9009,59 @@ begin
 end;
 $$;
 
-create or replace function public.disconnect_google_workspace(p_user_id uuid, p_provider text)
+create or replace function public.disconnect_google_workspace(p_user_id uuid, p_provider text, p_org_id uuid default null)
 returns void language plpgsql security definer set search_path = '' as $$
 begin
   perform 1 from auth.users where id = p_user_id for update;
   if not found then return; end if;
-  delete from public.google_workspace_oauth_states where user_id = p_user_id and provider = p_provider;
-  delete from public.user_google_workspace_tokens where user_id = p_user_id and provider = p_provider;
+  delete from public.google_workspace_oauth_states
+    where user_id = p_user_id and provider = p_provider
+      and org_id is not distinct from p_org_id;
+  delete from public.user_google_workspace_tokens
+    where user_id = p_user_id and provider = p_provider
+      and org_id is not distinct from p_org_id;
 end;
 $$;
 
-revoke all on function public.complete_google_workspace_oauth(text,text,jsonb), public.disconnect_google_workspace(uuid,text) from public, anon, authenticated;
-grant execute on function public.complete_google_workspace_oauth(text,text,jsonb), public.disconnect_google_workspace(uuid,text) to service_role;
+revoke all on function public.complete_google_workspace_oauth(text,text,jsonb), public.disconnect_google_workspace(uuid,text,uuid) from public, anon, authenticated;
+grant execute on function public.complete_google_workspace_oauth(text,text,jsonb), public.disconnect_google_workspace(uuid,text,uuid) to service_role;
+
+-- CourtListener: the switch and the person's own token, per workspace
+-- (20261022_01). An organization's own token stays in org_api_keys and is
+-- laid over the member's when it has one. Replaces
+-- user_profiles.legal_research_us and the 'courtlistener' row of
+-- user_api_keys, which are no longer read or written.
+create table if not exists public.user_courtlistener_connections (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  org_id uuid,
+  enabled boolean not null default true,
+  -- The person's own API token for this workspace, encrypted like
+  -- user_api_keys. Null when they have not saved one.
+  encrypted_key text,
+  iv text,
+  auth_tag text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint user_courtlistener_connections_key_check check (
+    (encrypted_key is null) = (iv is null) and (iv is null) = (auth_tag is null)
+  ),
+  constraint user_courtlistener_connections_workspace_key
+    unique nulls not distinct (user_id, org_id),
+  constraint user_courtlistener_connections_workspace_member_fkey
+    foreign key (org_id, user_id)
+    references public.org_members(org_id, user_id) on delete cascade
+);
+
+create index if not exists idx_user_courtlistener_connections_org
+  on public.user_courtlistener_connections(org_id) where org_id is not null;
+
+alter table public.user_courtlistener_connections enable row level security;
+revoke all on public.user_courtlistener_connections from public, anon, authenticated;
+grant select, insert, update, delete
+  on public.user_courtlistener_connections
+  to service_role;
+
 
 -- Organization departure recovery and expiry.
 
@@ -10894,5 +11154,20 @@ insert into public.schema_migrations (filename) values
   ('20261017_04_playbook_access.sql'),
   ('20261017_05_playbook_reviews.sql'),
   ('20261017_06_remove_unused_playbook_structure.sql'),
-  ('20261017_07_playbook_storage_cleanup.sql')
+  ('20261017_07_playbook_storage_cleanup.sql'),
+  ('20261017_08_user_web_search.sql'),
+  ('20261018_01_remove_playbook_global_guidance.sql'),
+  ('20261018_02_playbook_run_history_index.sql'),
+  ('20261019_01_playbook_run_scope.sql'),
+  ('20261020_01_playbook_import_status.sql'),
+  ('20261020_02_web_search_api_keys.sql'),
+  ('20261020_03_playbook_import_target_version.sql'),
+  ('20261021_01_chat_subagent_runs.sql'),
+  ('20261021_02_user_subagent_defaults.sql'),
+  ('20261021_03_user_response_details.sql'),
+  ('20261021_04_word_chat_message_playbook.sql'),
+  ('20261022_01_workspace_connectors.sql'),
+  ('20261023_02_document_version_review_state.sql'),
+  ('20261023_03_project_tasks.sql'),
+  ('20261023_04_notifications.sql')
 on conflict (filename) do nothing;

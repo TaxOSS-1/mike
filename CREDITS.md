@@ -22,6 +22,8 @@ infrastructure, and development workflow, including optional local integrations.
 | [ExcelJS](https://github.com/exceljs/exceljs) | Building Excel workbook exports. |
 | [JSZip](https://github.com/Stuk/jszip) | Reading and writing ZIP-based document packages. |
 | [fast-xml-parser](https://github.com/NaturalIntelligence/fast-xml-parser) | Parsing document XML. |
+| [Defuddle](https://github.com/kepano/defuddle) | Extracting the main content of web pages the assistant reads. |
+| [linkedom](https://github.com/WebReflection/linkedom) | Parsing web pages on the backend. |
 
 ## Application and interface
 
@@ -61,6 +63,7 @@ infrastructure, and development workflow, including optional local integrations.
 | [Mailpit](https://github.com/axllent/mailpit) | Capturing email during local development. |
 | [Sentry JavaScript SDKs](https://github.com/getsentry/sentry-javascript) | Error reporting across the backend, web app, and Word add-in. |
 | [Undici](https://github.com/nodejs/undici) | Backend HTTP requests. |
+| [Nodemailer](https://nodemailer.com/) | Outbound email over SMTP (invitations, notifications). |
 
 ## Development and testing
 

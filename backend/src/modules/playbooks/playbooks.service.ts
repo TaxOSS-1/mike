@@ -12,19 +12,41 @@ export {
   playbookModelAvailability,
   PLAYBOOK_IMPORT_GENERIC_FAILURE,
   playbookImportFailureMessage,
+  PLAYBOOK_IMPORT_CONTENT_TYPES,
+  playbookImportFileType,
   playbookCompilationTimeoutMs,
   createPlaybook,
   listPlaybooks,
   getPlaybook,
   getPlaybookSource,
-  importPlaybookFromDocx,
+  importPlaybookFromFile,
+  startPlaybookImport,
+  getPlaybookImport,
+  listRunningPlaybookImports,
+  INTERRUPTED_IMPORT_ERROR,
+  MAX_PLAYBOOK_IMPORT_BYTES,
   updatePlaybookContent,
   reviewWithPlaybook,
+  startPlaybookReview,
+  INTERRUPTED_RUN_ERROR,
   listPlaybookRuns,
   listAllPlaybookRuns,
+  listPlaybookRunHistory,
+  playbookRunStatuses,
+  deletePlaybookRun,
   deletePlaybook,
   playbookConfiguration,
+  type PlaybookImport,
 } from "./playbooks.operations";
+
+export {
+  queuePlaybookReview,
+  queuePlaybookImport,
+  handlePlaybookReview,
+  handlePlaybookImport,
+  markPlaybookReviewJobFailed,
+  markPlaybookImportJobFailed,
+} from "./playbooks.jobs";
 
 export {
   listPlaybookSources,
@@ -33,11 +55,17 @@ export {
   addPlaybookSourceFromDocument,
   deletePlaybookSource,
   playbookSourceFileType,
-  playbookSourceUploadPrefix,
   MAX_PLAYBOOK_SOURCE_FILE_BYTES,
   PLAYBOOK_SOURCE_CONTENT_TYPES,
   type PublicPlaybookSource,
 } from "./playbooks.sources";
+
+export {
+  playbookImportPrefix,
+  playbookSourceUploadPrefix,
+  isStagedPlaybookImportKey,
+  isStagedPlaybookSourceKey,
+} from "./playbooks.staging";
 
 export {
   listPlaybookPeople,
@@ -46,3 +74,10 @@ export {
   revokePlaybookShare,
   type PlaybookShare,
 } from "./playbooks.sharing";
+
+// Access resolution shared with account export, which must see playbooks
+// through the same readability rule as the list.
+export {
+  resolvePlaybookRoles,
+  type PlaybookAccessRow,
+} from "./playbooks.access";

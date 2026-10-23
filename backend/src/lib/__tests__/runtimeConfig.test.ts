@@ -8,6 +8,7 @@ import {
   uploadJobWallClockMs,
   uploadProcessingConfiguration,
   uploadSessionRateLimitConfiguration,
+  validateEgressConfiguration,
   validateRuntimeConfiguration,
 } from "../runtimeConfig";
 
@@ -233,4 +234,25 @@ it("identifies invalid configuration fields without sending their values", () =>
       "API_PUBLIC_URL,FRONTEND_URL,SUPABASE_PUBLISHABLE_KEY,SUPABASE_URL",
   });
   expect(JSON.stringify(event)).not.toContain("PRIVATE");
+});
+
+describe("egress configuration", () => {
+  it("accepts an unset or well-formed trusted origin list", () => {
+    expect(() => validateEgressConfiguration({} as NodeJS.ProcessEnv)).not.toThrow();
+    expect(() =>
+      validateEgressConfiguration({
+        TRUSTED_PRIVATE_ORIGINS: "http://tax-register:8080, https://ollama.internal",
+      } as NodeJS.ProcessEnv),
+    ).not.toThrow();
+  });
+
+  it("names every malformed or forbidden entry and stops the boot", () => {
+    expect(() =>
+      validateEgressConfiguration({
+        TRUSTED_PRIVATE_ORIGINS: "http://tax-register:8080/mcp, http://169.254.169.254",
+      } as NodeJS.ProcessEnv),
+    ).toThrow(
+      /egress configuration is invalid[\s\S]*must be an origin[\s\S]*cloud metadata endpoint/,
+    );
+  });
 });

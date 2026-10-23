@@ -10,7 +10,10 @@ const { getUserApiKeys, deleteFile, uploadFile } = vi.hoisted(() => ({
 vi.mock("../../user/user.service", () => ({ getUserApiKeys }));
 vi.mock("../../../lib/storage", () => ({ deleteFile, uploadFile }));
 
-import { importPlaybookFromDocx } from "../playbooks.operations";
+import {
+  importPlaybookFromFile,
+  startPlaybookImport,
+} from "../playbooks.operations";
 
 const MODEL = "claude-opus-5";
 
@@ -27,7 +30,6 @@ function compiled(name: string): string {
   return JSON.stringify({
     name,
     description: "",
-    globalGuidance: "",
     representedParty: "Customer",
     documentTypes: [],
     jurisdictions: [],
@@ -62,12 +64,17 @@ function fakeDb(existing: Record<string, unknown> | null) {
     const query: Record<string, unknown> = {};
     const settle = async () => {
       calls.push({ table, op: state.op, values: state.values });
+      // A replacement's guarded update returns the row it matched; this
+      // fake does not apply filters, so it always matches.
+      if (state.op === "update" && table === "playbooks")
+        return { data: existing ? [existing] : [], error: null };
       if (state.op !== "select") return { data: null, error: null };
       if (table === "playbooks") return { data: existing, error: null };
       return { data: null, error: null };
     };
     query.select = vi.fn((columns?: string) => {
-      state.op = "select";
+      // A query starts as a select; after a write, select names the
+      // columns the write returns and leaves it a write.
       state.columns = columns;
       return query;
     });
@@ -101,7 +108,6 @@ const EXISTING = {
   content_json: {
     name: "Commercial Playbook",
     description: "",
-    globalGuidance: "",
     representedParty: "Customer",
     documentTypes: [],
     jurisdictions: [],
@@ -144,7 +150,7 @@ describe("replacing a playbook from a Word file", () => {
   it("rewrites the existing content instead of adding a playbook", async () => {
     const { db, calls } = fakeDb(EXISTING);
 
-    await importPlaybookFromDocx({
+    await importPlaybookFromFile({
       userId: "u1",
       filename: "new.docx",
       buffer: await sourceDocx(),
@@ -174,7 +180,7 @@ describe("replacing a playbook from a Word file", () => {
   it("removes the superseded source file", async () => {
     const { db } = fakeDb(EXISTING);
 
-    await importPlaybookFromDocx({
+    await importPlaybookFromFile({
       userId: "u1",
       filename: "new.docx",
       buffer: await sourceDocx(),
@@ -199,7 +205,7 @@ describe("replacing a playbook from a Word file", () => {
   it("keeps the existing name when the caller sends none", async () => {
     const { db, calls } = fakeDb(EXISTING);
 
-    await importPlaybookFromDocx({
+    await importPlaybookFromFile({
       userId: "u1",
       filename: "new.docx",
       buffer: await sourceDocx(),
@@ -226,7 +232,7 @@ describe("replacing a playbook from a Word file", () => {
     const completeText = vi.fn();
 
     await expect(
-      importPlaybookFromDocx({
+      importPlaybookFromFile({
         userId: "u1",
         filename: "new.docx",
         buffer: await sourceDocx(),
@@ -244,7 +250,7 @@ describe("replacing a playbook from a Word file", () => {
   it("still creates a playbook when no playbookId is given", async () => {
     const { db, calls } = fakeDb(EXISTING);
 
-    await importPlaybookFromDocx({
+    await importPlaybookFromFile({
       userId: "u1",
       filename: "new.docx",
       buffer: await sourceDocx(),
@@ -259,5 +265,67 @@ describe("replacing a playbook from a Word file", () => {
     expect(writes.some((call) => call.op === "insert")).toBe(true);
     expect(writes.some((call) => call.op === "update")).toBe(false);
     expect(deleteFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("compiling an import apart from the request", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserApiKeys.mockResolvedValue({ claude: "sk-ant-test" });
+    uploadFile.mockResolvedValue(undefined);
+    deleteFile.mockResolvedValue(undefined);
+  });
+
+  it("returns the running attempt before the model answers", async () => {
+    const { db, calls } = fakeDb(EXISTING);
+    let answer!: (raw: string) => void;
+    const completeText = vi.fn(
+      () => new Promise<string>((resolve) => (answer = resolve)),
+    );
+
+    const { attempt, done } = await startPlaybookImport({
+      userId: "u1",
+      filename: "Standards.docx",
+      buffer: await sourceDocx(),
+      model: MODEL,
+      db,
+      dependencies: { completeText },
+    });
+
+    expect(attempt).toMatchObject({
+      status: "running",
+      filename: "Standards.docx",
+      playbookId: null,
+    });
+    expect(
+      calls.some((call) => call.table === "playbooks" && call.op === "insert"),
+    ).toBe(false);
+
+    await vi.waitFor(() => expect(completeText).toHaveBeenCalled());
+    answer(compiled("Standards"));
+    await done;
+
+    const finished = calls
+      .filter((call) => call.table === "playbook_imports" && call.op === "update")
+      .map((call) => call.values as Record<string, unknown>)
+      .find((values) => values.status === "completed");
+    expect(finished?.playbook_id).toEqual(expect.any(String));
+  });
+
+  it("refuses an unusable request itself rather than in the background", async () => {
+    const { db } = fakeDb(null);
+    const completeText = vi.fn();
+
+    await expect(
+      startPlaybookImport({
+        userId: "u1",
+        filename: "Standards.txt",
+        buffer: await sourceDocx(),
+        model: MODEL,
+        db,
+        dependencies: { completeText },
+      }),
+    ).rejects.toThrow(/\.docx or \.pdf/);
+    expect(completeText).not.toHaveBeenCalled();
   });
 });

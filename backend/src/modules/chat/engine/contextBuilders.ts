@@ -274,6 +274,8 @@ export const MAX_REPLAYED_REASONING_CHARS = 12_000;
  */
 export const MAX_REPLAYED_REASONING_TOTAL_CHARS = 36_000;
 
+const MAX_REPLAYED_BRIEF_CHARS = 4_000;
+
 /**
  * Attaches each earlier assistant turn's stored reasoning to the matching
  * message in `messages`, for models that opt into reasoning replay
@@ -366,6 +368,17 @@ export async function attachPriorReasoning(
   });
 }
 
+/** An answer's events with each delegation's own events after it. */
+export function withDelegationEvents<T extends { type?: unknown; events?: unknown }>(
+  events: T[],
+): T[] {
+  return events.flatMap((event) =>
+    event?.type === "delegation" && Array.isArray(event.events)
+      ? [event, ...(event.events as T[])]
+      : [event],
+  );
+}
+
 export async function enrichWithPriorEvents(
   messages: ChatMessage[],
   chatId: string | null | undefined,
@@ -418,13 +431,46 @@ export async function enrichWithPriorEvents(
   const approvedIds: string[] = [];
   const approvalOutcomes = new Set<string>();
   let rejectedApprovalSeen = false;
-  for (const ev of content as Record<string, unknown>[]) {
+  const documentLines = (ev: Record<string, unknown>): string[] | null => {
     if (ev?.type === "doc_created") {
-      lines.push(
-        `- generated_document → ${refFor(ev.document_id, ev.filename)}`,
-      );
-    } else if (ev?.type === "doc_edited") {
-      lines.push(`- edit_document → ${refFor(ev.document_id, ev.filename)}`);
+      return [`- generated_document → ${refFor(ev.document_id, ev.filename)}`];
+    }
+    if (ev?.type === "doc_edited") {
+      return [`- edit_document → ${refFor(ev.document_id, ev.filename)}`];
+    }
+    if (ev?.type !== "doc_replicated") return null;
+    // The model needs to know what each copy resolved to so it
+    // can call edit_document / read_document on them. Emit one
+    // line per copy, all attributed back to the same source.
+    const srcLabel =
+      typeof ev.filename === "string" ? untrustedRef(ev.filename) : "";
+    const copies = Array.isArray(ev.copies)
+      ? (ev.copies as {
+          new_filename?: unknown;
+          document_id?: unknown;
+        }[])
+      : [];
+    return copies.map((c) => {
+      const ref = refFor(c.document_id, c.new_filename);
+      return srcLabel
+        ? `- replicate_document → ${ref} (copy of ${srcLabel})`
+        : `- replicate_document → ${ref}`;
+    });
+  };
+  // A subagent's connector calls that ran without waiting on an approval.
+  const subagentConnectorLines = (ev: Record<string, unknown>): string[] => {
+    if (ev?.type !== "mcp_tool_call") return [];
+    const label = `${untrustedRef(ev.tool_name)} on ${untrustedRef(ev.connector_name)}`;
+    return [
+      ev.status === "error"
+        ? `- ${label} failed: ${untrustedRef(ev.error)}`
+        : `- ran ${label}`,
+    ];
+  };
+  for (const ev of content as Record<string, unknown>[]) {
+    const docLines = documentLines(ev);
+    if (docLines) {
+      lines.push(...docLines);
     } else if (ev?.type === "doc_read") {
       // Live Word reads have no doc_id and belong to a different tool;
       // labeling them read_document would name a handle that doesn't exist.
@@ -433,28 +479,40 @@ export async function enrichWithPriorEvents(
       } else {
         lines.push(`- read_document → ${refFor(ev.document_id, ev.filename)}`);
       }
-    } else if (ev?.type === "doc_replicated") {
-      // The model needs to know what each copy resolved to so it
-      // can call edit_document / read_document on them. Emit one
-      // line per copy, all attributed back to the same source.
-      const srcLabel =
-        typeof ev.filename === "string" ? untrustedRef(ev.filename) : "";
-      const copies = Array.isArray(ev.copies)
-        ? (ev.copies as {
-            new_filename?: unknown;
-            document_id?: unknown;
-          }[])
-        : [];
-      for (const c of copies) {
-        const ref = refFor(c.document_id, c.new_filename);
-        lines.push(
-          srcLabel
-            ? `- replicate_document → ${ref} (copy of ${srcLabel})`
-            : `- replicate_document → ${ref}`,
-        );
-      }
     } else if (ev?.type === "workflow_applied") {
       lines.push(`- applied workflow: ${untrustedRef(ev.title)}`);
+    } else if (ev?.type === "web_search" && !ev.error) {
+      const count = Array.isArray(ev.results) ? ev.results.length : 0;
+      lines.push(
+        `- web_search ${untrustedRef(ev.query)} → ${count} result${count === 1 ? "" : "s"}`,
+      );
+    } else if (ev?.type === "web_read" && !ev.error) {
+      lines.push(`- read_webpage → ${untrustedRef(ev.url)}`);
+    } else if (ev?.type === "web_sources" && Array.isArray(ev.sources)) {
+      for (const source of ev.sources as { url?: unknown }[]) {
+        lines.push(`- cited web page → ${untrustedRef(source.url)}`);
+      }
+    } else if (ev?.type === "delegation") {
+      const question =
+        typeof ev.question === "string"
+          ? `; question: ${untrustedRef(ev.question)}`
+          : "";
+      const brief =
+        typeof ev.brief === "string"
+          ? `; brief: ${untrustedRef(ev.brief.slice(0, MAX_REPLAYED_BRIEF_CHARS))}`
+          : "";
+      const awaitingApproval = Array.isArray(ev.approval_ids)
+        ? " (waiting on the user's approval)"
+        : "";
+      lines.push(
+        `- delegated ${untrustedRef(ev.title)} (id: ${String(ev.delegation_id)}) → ${String(ev.status)}${awaitingApproval}${question}${brief}`,
+        ...(Array.isArray(ev.events)
+          ? (ev.events as Record<string, unknown>[]).flatMap(
+              (nested) =>
+                documentLines(nested) ?? subagentConnectorLines(nested),
+            )
+          : []),
+      );
     } else if (ev?.type === "ask_inputs") {
       const items = (Array.isArray(ev.items) ? ev.items : []) as Record<
         string,
@@ -612,6 +670,41 @@ export function parseOptionalDocumentContext(
   };
 }
 
+const DOCUMENT_LIST_HEADING = "\n\n---\nAVAILABLE DOCUMENTS:\n";
+
+function documentListPrompt(
+  docs: { doc_id: string; filename: string; folder_path?: string }[],
+  nonce?: string,
+): string {
+  if (!docs.length) return "";
+  let section = DOCUMENT_LIST_HEADING;
+  for (const doc of docs) {
+    // Filenames are user-controlled and may contain injected text.
+    // Wrap in the spotlight fence so the LLM treats them as data.
+    const rawLabel = doc.folder_path
+      ? `${doc.folder_path} / ${doc.filename}`
+      : doc.filename;
+    const label = spotlightFilename(rawLabel, nonce);
+    section += `- ${doc.doc_id}: ${label}\n`;
+  }
+  section +=
+    "\nYou do NOT retain document content between conversation turns. You MUST call read_document (or fetch_documents) once at the start of every response that involves a document's content, even if you have read it in a previous turn. Within the same response, do not call read_document or fetch_documents again for a document/version that has already been read; use the prior tool result, find_in_document for targeted checks, or proceed to the next required tool. Failure to read once per turn will result in hallucinated or stale content.\n---\n";
+  return section;
+}
+
+export function withDocumentList(
+  systemPrompt: string,
+  docStore: DocStore,
+  nonce?: string,
+): string {
+  // buildMessages ends the system prompt with its document list.
+  const listStart = systemPrompt.indexOf(DOCUMENT_LIST_HEADING);
+  const withoutList =
+    listStart < 0 ? systemPrompt : systemPrompt.slice(0, listStart);
+  const docs = [...docStore].map(([doc_id, { filename }]) => ({ doc_id, filename }));
+  return withoutList + documentListPrompt(docs, nonce);
+}
+
 export function buildMessages(
   messages: ChatMessage[],
   docAvailability: {
@@ -639,20 +732,7 @@ export function buildMessages(
     systemContent += `\n\n${MESSAGE_TIME_PROMPT}`;
   }
 
-  if (docAvailability.length) {
-    systemContent += "\n\n---\nAVAILABLE DOCUMENTS:\n";
-    for (const doc of docAvailability) {
-      // Filenames are user-controlled and may contain injected text.
-      // Wrap in the spotlight fence so the LLM treats them as data.
-      const rawLabel = doc.folder_path
-        ? `${doc.folder_path} / ${doc.filename}`
-        : doc.filename;
-      const label = spotlightFilename(rawLabel, nonce);
-      systemContent += `- ${doc.doc_id}: ${label}\n`;
-    }
-    systemContent +=
-      "\nYou do NOT retain document content between conversation turns. You MUST call read_document (or fetch_documents) once at the start of every response that involves a document's content, even if you have read it in a previous turn. Within the same response, do not call read_document or fetch_documents again for a document/version that has already been read; use the prior tool result, find_in_document for targeted checks, or proceed to the next required tool. Failure to read once per turn will result in hallucinated or stale content.\n---\n";
-  }
+  systemContent += documentListPrompt(docAvailability, nonce);
   formatted.push({ role: "system", content: systemContent });
 
   // Map document_id (UUID) → current-turn doc_id slug, so when we
@@ -772,19 +852,28 @@ export async function loadUserMessageSentTimes(
   const userCount = messages.filter((m) => m.role === "user").length;
   const times: (string | null)[] = new Array(userCount).fill(null);
   if (!chatId || userCount === 0) return times;
-  const { data, error } = await db
-    .from(messageTable)
-    .select("created_at")
-    .eq("chat_id", chatId)
-    .eq("role", "user")
-    .order("created_at", { ascending: true });
-  if (error || !Array.isArray(data)) return times;
-  const stored = (data as { created_at?: unknown }[]).map((row) =>
-    typeof row.created_at === "string" ? row.created_at : null,
-  );
   const savedCount = latestUnsaved ? userCount - 1 : userCount;
+  const stored: (string | null)[] = [];
+  // Read only the context window, newest first, in pages below PostgREST's
+  // row cap. An oldest-first capped query mislabels long conversations.
+  for (let offset = 0; offset < savedCount; offset += 500) {
+    const count = Math.min(500, savedCount - offset);
+    const { data, error } = await db
+      .from(messageTable)
+      .select("created_at")
+      .eq("chat_id", chatId)
+      .eq("role", "user")
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .range(offset, offset + count - 1);
+    if (error || !Array.isArray(data)) return times;
+    stored.push(...data.map((row: { created_at?: unknown }) =>
+      typeof row.created_at === "string" ? row.created_at : null,
+    ));
+    if (data.length < count) break;
+  }
   for (let k = 1; k <= Math.min(savedCount, stored.length); k++) {
-    times[savedCount - k] = stored[stored.length - k];
+    times[savedCount - k] = stored[k - 1];
   }
   return times;
 }
@@ -807,6 +896,7 @@ export function stripTransientAssistantEvents(events: AssistantEvent[]) {
 // therefore produces a type error until its textless-turn behavior is chosen
 // deliberately, instead of silently dropping an otherwise useful response.
 const COMPLETES_TEXTLESS_TURN = {
+  text_card: true,
   reasoning: false,
   ask_inputs: true,
   ask_inputs_response: false,
@@ -825,6 +915,11 @@ const COMPLETES_TEXTLESS_TURN = {
   courtlistener_read_case: false,
   courtlistener_verify_citations: false,
   mcp_tool_call: false,
+  web_search: false,
+  web_read: false,
+  web_sources: false,
+  delegation: false,
+  response_details: false,
   case_opinions: false,
   content: false,
   word_edit_block: false,
@@ -1245,7 +1340,7 @@ export async function buildDocContext(
     for (const row of rows ?? []) {
       const content = (row as { content?: unknown }).content;
       if (!Array.isArray(content)) continue;
-      for (const ev of content as Record<string, unknown>[]) {
+      for (const ev of withDelegationEvents(content as Record<string, unknown>[])) {
         if (
           (ev?.type === "doc_created" || ev?.type === "doc_edited") &&
           typeof ev.document_id === "string"
@@ -1380,11 +1475,13 @@ export async function buildDocContext(
   return { docIndex, docStore };
 }
 
+/** Build project context and resolve message attachments with the caller's identity. */
 export async function buildProjectDocContext(
   projectId: string,
   userId: string,
   db: Db,
   messages: ChatMessage[] = [],
+  userEmail?: string | null,
 ): Promise<{
   docIndex: DocIndex;
   docStore: DocStore;
@@ -1475,7 +1572,7 @@ export async function buildProjectDocContext(
     ),
   }));
   if (attachmentMessages.some((message) => message.files?.length)) {
-    const attachments = await buildDocContext(attachmentMessages, userId, db);
+    const attachments = await buildDocContext(attachmentMessages, userId, db, undefined, "chat_messages", userEmail);
     for (const [label, document] of Object.entries(attachments.docIndex)) {
       const attachmentLabel = `attachment-${label}`;
       docIndex[attachmentLabel] = document;

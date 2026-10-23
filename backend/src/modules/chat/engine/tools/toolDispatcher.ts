@@ -1,4 +1,5 @@
-import type { DocumentSearchEvent } from "@mike/contracts";
+import type { ConnectorApprovalItem, DocumentSearchEvent, TextCardEvent } from "@mike/contracts";
+import { textCardEvent } from "./textCard";
 import { internalFailure } from "../../../../lib/serviceResult";
 import { canUseWorkflowInWorkspace } from "../../../../lib/workflowWorkspace";
 import { safeError } from "../../../../lib/safeError";
@@ -9,6 +10,7 @@ import {
 } from "../../../playbooks/playbooks.service";
 import { catalogKeyFromWorkflowId } from "../../../../lib/workflowCatalog";
 import { teamOrgIdOf } from "../../../../lib/personalOrgs";
+import type { ConnectorOwner } from "../../../../lib/connectorOwner";
 import {
   isGoogleWorkspaceTool,
   executeGoogleWorkspaceToolCall,
@@ -31,8 +33,10 @@ import {
 import { executeMcpToolCall, type McpToolEvent } from "../../../../lib/mcpConnectors";
 import {
   APPROVAL_UNAVAILABLE_MESSAGE,
+  addApprovalItems,
   planConnectorToolCall,
 } from "./connectorApprovals";
+import { createKeyedLock, type KeyedLock } from "./documentLocks";
 import {
   GOOGLE_DRIVE_TOOL_PREFIX,
   executeGoogleDriveToolCall,
@@ -321,6 +325,13 @@ export async function runToolCalls(
     orgId?: string | null;
     /** The conversation's model, used by run_playbook for its review. */
     model?: string;
+    /**
+     * Shared by every runToolCalls of one answer, its subagents' included, so
+     * two writes to one document never start from the same version.
+     */
+    documentLocks?: KeyedLock;
+    /** A subagent scoped to its docStore's documents: searches stay inside them. */
+    documentsScoped?: boolean;
   } = {},
 ): Promise<{
   toolResults: unknown[];
@@ -344,6 +355,7 @@ export async function runToolCalls(
   workflowsApplied: { workflow_id: string; title: string }[];
   docsEdited: DocEditedResult[];
   askInputsEvents: AskInputsEvent[];
+  textCardEvents: TextCardEvent[];
   courtlistenerEvents: CourtlistenerToolEvent[];
   caseCitationEvents: CaseCitationEvent[];
   mcpEvents: McpToolEvent[];
@@ -369,10 +381,12 @@ export async function runToolCalls(
   const workflowsApplied: { workflow_id: string; title: string }[] = [];
   const docsEdited: DocEditedResult[] = [];
   const askInputsEvents: AskInputsEvent[] = [];
+  const textCardEvents: TextCardEvent[] = [];
   const courtlistenerEvents: CourtlistenerToolEvent[] = [];
   const caseCitationEvents: CaseCitationEvent[] = [];
   const mcpEvents: McpToolEvent[] = [];
-  const approvalItems: AskInputItem[] = [];
+  const approvalItems: ConnectorApprovalItem[] = [];
+  const documentLocks = options.documentLocks ?? createKeyedLock();
   const courtState: CourtlistenerTurnState = courtlistenerState ?? {
     casesByClusterId: new Map(),
   };
@@ -416,9 +430,8 @@ export async function runToolCalls(
       const storagePath = (result as { storage_path?: string }).storage_path;
 
       if (documentId && storagePath && docIndex) {
-        const existingLabels = new Set(Object.keys(docIndex));
         let i = 0;
-        while (existingLabels.has(`doc-${i}`)) i++;
+        while (`doc-${i}` in docIndex) i++;
         newDocLabel = `doc-${i}`;
         docIndex[newDocLabel] = {
           document_id: documentId,
@@ -476,6 +489,11 @@ export async function runToolCalls(
     });
   };
 
+  const searchesOwnDocument = (args: Record<string, unknown>) =>
+    args.scope === "document" &&
+    !!resolveDocLabel(String(args.doc_id ?? ""), docStore, docIndex);
+
+  let connectorOwner: ConnectorOwner | undefined;
   for (const tc of toolCalls) {
     let args: Record<string, unknown> = {};
     try {
@@ -488,17 +506,15 @@ export async function runToolCalls(
       tc.function.name.startsWith(GOOGLE_DRIVE_TOOL_PREFIX) ||
       isGoogleWorkspaceTool(tc.function.name) ||
       tc.function.name.startsWith("mcp_");
-    if (isConnectorTool && (await teamOrgIdOf(db, options.orgId)) !== null) {
-      toolResults.push({
-        role: "tool",
-        tool_call_id: tc.id,
-        content: "Connectors are available only in the Personal workspace.",
-      });
-      continue;
-    }
     if (isConnectorTool) {
-      const plan = await planConnectorToolCall(
+      // Only the connections for the conversation's workspace: a tool named
+      // after one in another workspace resolves to nothing.
+      connectorOwner ??= {
         userId,
+        orgId: await teamOrgIdOf(db, options.orgId),
+      };
+      const plan = await planConnectorToolCall(
+        connectorOwner,
         tc.function.name,
         args,
         db,
@@ -546,16 +562,21 @@ export async function runToolCalls(
                 },
               }
             : tc.function.name.startsWith("mcp_")
-              ? await executeMcpToolCall(userId, tc.function.name, args, db)
+              ? await executeMcpToolCall(
+                  connectorOwner,
+                  tc.function.name,
+                  args,
+                  db,
+                )
               : isGoogleWorkspaceTool(tc.function.name)
                 ? await executeGoogleWorkspaceToolCall(
-                    userId,
+                    connectorOwner,
                     tc.function.name,
                     args,
                     db,
                   )
                 : await executeGoogleDriveToolCall(
-                    userId,
+                    connectorOwner,
                     tc.function.name,
                     args,
                     db,
@@ -577,6 +598,26 @@ export async function runToolCalls(
           error: event.error,
         })}\n\n`,
       );
+      continue;
+    }
+
+    if (tc.function.name === "create_text_card") {
+      const event = textCardEvent(tc.id, args);
+      if (event) {
+        textCardEvents.push(event);
+        write(`data: ${JSON.stringify(event)}\n\n`);
+      }
+      toolResults.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: JSON.stringify(
+          event
+            ? { card_id: event.card_id, displayed: true }
+            : {
+                error: "Provide a non-empty title (up to 200 characters) and text (up to 100000 characters).",
+              },
+        ),
+      });
       continue;
     }
 
@@ -640,6 +681,20 @@ export async function runToolCalls(
         content: filename
           ? `${citationReminder(docId, filename, promptFilename)}${sourceNotice ? `\n${sourceNotice}` : ""}\n\n${fencedContent}`
           : fencedContent,
+      });
+    } else if (
+      tc.function.name === "find_documents" &&
+      options.documentsScoped &&
+      !searchesOwnDocument(args)
+    ) {
+      toolResults.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: JSON.stringify({
+          ok: false,
+          error:
+            "You can search only the documents you were given: use document scope with one of their doc_ids, or find_in_document.",
+        }),
       });
     } else if (tc.function.name === "find_documents") {
       const limit = typeof args.limit === "number" && Number.isInteger(args.limit)
@@ -880,11 +935,18 @@ export async function runToolCalls(
           tool_call_id: tc.id,
           content: JSON.stringify({ error }),
         });
-      if (!docInfo || !indexed) {
+      // The open Word document arrives as request-scoped text with no stored
+      // row: it is reviewed from that text, and its suggestions are made in
+      // Word by the pane's edit tools rather than saved as a new version.
+      const liveText = indexed ? undefined : docInfo?.inline_text;
+      if (!docInfo || (!indexed && liveText === undefined)) {
         fail(`Document '${rawDocId}' not found in this chat's attachments.`);
       } else if (!options.model) {
         fail("No model is selected for the review.");
       } else {
+        // The live Word document has no stored id; its request-local label
+        // still serializes reviews of the same document within this turn.
+        const release = await documentLocks.acquire(indexed?.document_id ?? docId);
         try {
           const isDocx = docInfo.file_type === "docx";
           // A Word document is read from its file by the review itself; other
@@ -898,7 +960,7 @@ export async function runToolCalls(
             userId,
             userEmail: options.userEmail,
             playbookId: String(args.playbook_id ?? ""),
-            documentId: indexed.document_id,
+            documentId: indexed?.document_id,
             documentText,
             documentName: docInfo.filename,
             instructions:
@@ -911,6 +973,7 @@ export async function runToolCalls(
             finding.edit ? [finding.edit] : [],
           );
           if (
+            indexed &&
             run.editedVersionId &&
             run.editedVersionNumber !== null &&
             annotations.length
@@ -966,7 +1029,9 @@ export async function runToolCalls(
                 "Summarise the findings for the user, most serious first, grouped by status.",
                 annotations.length
                   ? "Tracked changes are already shown as Accept/Reject cards; do not repeat their suggested language in full."
-                  : "No tracked changes were made; give the suggested language where it matters.",
+                  : liveText !== undefined
+                    ? "This is the open Word document, so no tracked changes were made. Give the suggested language where it matters, and make a change in the document only when the user asks for it."
+                    : "No tracked changes were made; give the suggested language where it matters.",
               ].join(" "),
             }),
           });
@@ -976,6 +1041,8 @@ export async function runToolCalls(
             console.error("[run_tools] run_playbook failed", safeError(error));
             fail("The playbook review failed. Try again.");
           }
+        } finally {
+          release();
         }
       }
     } else if (tc.function.name === "list_workflows") {
@@ -1744,22 +1811,26 @@ export async function runToolCalls(
             reason: e.reason ? String(e.reason) : undefined,
           }),
         );
-        const reuseVersion = turnEditState?.get(indexed.document_id);
-        const result = await runEditDocument({
-          documentId: indexed.document_id,
-          userId,
-          userEmail: options.userEmail ?? null,
-          edits,
-          db,
-          reuseVersion,
+        const result = await documentLocks.run(indexed.document_id, async () => {
+          const edited = await runEditDocument({
+            documentId: indexed.document_id,
+            userId,
+            userEmail: options.userEmail ?? null,
+            edits,
+            db,
+            reuseVersion: turnEditState?.get(indexed.document_id),
+          });
+          if (edited.ok) {
+            turnEditState?.set(indexed.document_id, {
+              versionId: edited.version_id,
+              versionNumber: edited.version_number,
+              storagePath: edited.storage_path,
+            });
+          }
+          return edited;
         });
 
         if (result.ok) {
-          turnEditState?.set(indexed.document_id, {
-            versionId: result.version_id,
-            versionNumber: result.version_number,
-            storagePath: result.storage_path,
-          });
           clearTurnReadsForDocument(turnReadState, indexed.document_id);
           // Keep the chat-local doc label pointed at the latest
           // edited version so any follow-up read_document call in
@@ -2069,7 +2140,6 @@ export async function runToolCalls(
                 // Register every successful copy under a fresh
                 // doc-N slug so the model can edit/read any of
                 // them in the same turn.
-                const existingLabels = new Set(Object.keys(docIndex));
                 let nextLabelIdx = 0;
                 const copies: {
                   new_filename: string;
@@ -2112,10 +2182,8 @@ export async function runToolCalls(
                       );
                     }
                   }
-                  while (existingLabels.has(`doc-${nextLabelIdx}`))
-                    nextLabelIdx++;
+                  while (`doc-${nextLabelIdx}` in docIndex) nextLabelIdx++;
                   const slug = `doc-${nextLabelIdx}`;
-                  existingLabels.add(slug);
                   docIndex[slug] = {
                     document_id: d.id,
                     filename: d.filename,
@@ -2280,22 +2348,7 @@ export async function runToolCalls(
     courtlistenerEvents.push(groupEvent);
   }
 
-  if (approvalItems.length > 0) {
-    // One pause carries every pending decision: approvals join the model's own
-    // questions when it asked any in the same step.
-    if (askInputsEvents.length > 0) {
-      askInputsEvents[0] = {
-        ...askInputsEvents[0],
-        items: [...askInputsEvents[0].items, ...approvalItems],
-      };
-    } else {
-      askInputsEvents.push({
-        type: "ask_inputs",
-        event_id: crypto.randomUUID(),
-        items: approvalItems,
-      });
-    }
-  }
+  addApprovalItems(askInputsEvents, approvalItems);
 
   return {
     toolResults,
@@ -2307,6 +2360,7 @@ export async function runToolCalls(
     workflowsApplied,
     docsEdited,
     askInputsEvents,
+    textCardEvents,
     courtlistenerEvents,
     caseCitationEvents,
     mcpEvents,
