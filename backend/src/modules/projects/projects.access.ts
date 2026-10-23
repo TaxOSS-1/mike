@@ -10,6 +10,7 @@ import {
   checkProjectAccess,
   normalizeEmail,
 } from "../../lib/access";
+import { recordAudit } from "../../lib/audit";
 import { can } from "../../lib/permissions";
 import {
   deleteProjectGrant,
@@ -158,6 +159,21 @@ export async function grantProjectAccess(
       assignedBy: userId,
     });
     if (!result.ok) return { ok: false, kind: "db_error", error: result.detail };
+    await recordAudit(db, {
+      userId,
+      userEmail,
+      orgId: access.project.org_id,
+      action: "project.access.granted",
+      title: target.member.email,
+      surface: "project",
+      projectId,
+      detail: {
+        org_id: access.project.org_id,
+        target_user_id: target.member.userId,
+        target_email: target.member.email,
+        role,
+      },
+    });
     return {
       ok: true,
       grant: {
@@ -195,7 +211,24 @@ export async function grantProjectAccess(
     // result.detail is a raw driver message here — log it, never send it.
     return { ok: false, kind: "db_error", error: result.detail };
   }
-  return { ok: true, grant: result.grant as unknown as Record<string, unknown> };
+  const grant = result.grant as unknown as Record<string, unknown>;
+  const grantedEmail =
+    typeof grant.email === "string" ? grant.email : (email ?? null);
+  await recordAudit(db, {
+    userId,
+    userEmail,
+    orgId: null,
+    action: "project.access.granted",
+    title: grantedEmail,
+    surface: "project",
+    projectId,
+    detail: {
+      org_id: null,
+      target_email: grantedEmail,
+      role: typeof grant.role === "string" ? grant.role : role,
+    },
+  });
+  return { ok: true, grant };
 }
 
 // DELETE /projects/:projectId/access/:email — revoke one recipient.
@@ -248,6 +281,20 @@ export async function revokeProjectAccess(
         kind: "not_found",
         detail: "Access override not found",
       };
+    await recordAudit(db, {
+      userId,
+      userEmail,
+      orgId: access.project.org_id,
+      action: "project.access.revoked",
+      title: target.member.email,
+      surface: "project",
+      projectId,
+      detail: {
+        org_id: access.project.org_id,
+        target_user_id: target.member.userId,
+        target_email: target.member.email,
+      },
+    });
     return { ok: true };
   }
 
@@ -258,5 +305,16 @@ export async function revokeProjectAccess(
   if (!result.ok) return { ok: false, kind: "db_error", error: result.detail };
   if (!result.removed)
     return { ok: false, kind: "not_found", detail: "Access grant not found" };
+  const revokedEmail = normalizeEmail(targetEmail) || targetEmail;
+  await recordAudit(db, {
+    userId,
+    userEmail,
+    orgId: null,
+    action: "project.access.revoked",
+    title: revokedEmail,
+    surface: "project",
+    projectId,
+    detail: { org_id: null, target_email: revokedEmail },
+  });
   return { ok: true };
 }

@@ -10,9 +10,10 @@ import {
 // ---------------------------------------------------------------------------
 // Hoisted mock fns we want to reconfigure per-test.
 // ---------------------------------------------------------------------------
-const { checkProjectAccess, deleteProjectsByIds } = vi.hoisted(() => ({
+const { checkProjectAccess, deleteProjectsByIds, recordAudit } = vi.hoisted(() => ({
     checkProjectAccess: vi.fn(),
     deleteProjectsByIds: vi.fn(),
+    recordAudit: vi.fn(async (..._args: unknown[]) => {}),
 }));
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,13 @@ vi.mock("../../lib/access", async (importOriginal) => ({
     listAccessibleProjectIds: vi.fn(async () => []),
     getOrgRole: vi.fn(async () => null),
     resolveContentOrgId: vi.fn(async () => null),
+}));
+
+// Audit rows are asserted on, never written: the project routes record the
+// lifecycle and sharing events this suite pins below.
+vi.mock("../../lib/audit", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../lib/audit")>()),
+    recordAudit: (...args: unknown[]) => recordAudit(...args),
 }));
 
 // user router imports all four cleanup helpers at module load.
@@ -2115,5 +2123,149 @@ describe("projects.routes", () => {
             expect(res.status).toBe(500);
       expect(res.body.detail).toBe("Something went wrong. Please try again.");
         });
+    });
+});
+
+// ── Project audit events ──────────────────────────────────────────────────
+// Creating, opening, closing, deleting and sharing a project each leave one
+// row in audit_events; a refused request leaves none.
+describe("project audit events", () => {
+    beforeEach(() => {
+        resetSupabaseState();
+        checkProjectAccess.mockReset();
+        deleteProjectsByIds.mockReset();
+        recordAudit.mockClear();
+    });
+
+    it("records project.created with the workspace and visibility", async () => {
+        supabaseState.rpc = {
+            data: { id: "p9", name: "Gamma", user_id: "u1" },
+            error: null,
+        };
+
+        const res = await request(app)
+            .post("/projects")
+            .set(...AUTH)
+            .send({ name: "  Gamma  " });
+
+        expect(res.status).toBe(201);
+        expect(recordAudit).toHaveBeenCalledTimes(1);
+        expect(recordAudit).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+                userId: "u1",
+                userEmail: "u1@test.local",
+                orgId: null,
+                action: "project.created",
+                title: "Gamma",
+                surface: "project",
+                projectId: "p9",
+                detail: { org_id: null, visibility: "private" },
+            }),
+        );
+    });
+
+    it("records nothing when project creation is refused", async () => {
+        const res = await request(app)
+            .post("/projects")
+            .set(...AUTH)
+            .send({ name: "   " });
+        expect(res.status).toBe(400);
+        expect(recordAudit).not.toHaveBeenCalled();
+    });
+
+    it("records project.deleted after the cascade, naming the project and its organization", async () => {
+        deleteProjectsByIds.mockResolvedValue(1);
+        checkProjectAccess.mockResolvedValue({
+            ok: true,
+            isCreator: false,
+            orgRole: "admin",
+            projectRole: "owner",
+            project: { id: "p1", user_id: "u2", org_id: "org-1" },
+        });
+        supabaseState.tables.projects = { data: { name: "Acquisition" }, error: null };
+
+        const res = await request(app).delete("/projects/p1").set(...AUTH);
+
+        expect(res.status).toBe(204);
+        expect(recordAudit).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+                action: "project.deleted",
+                orgId: "org-1",
+                projectId: "p1",
+                title: "Acquisition",
+                detail: { org_id: "org-1" },
+            }),
+        );
+    });
+
+    it("records nothing when the delete is refused or removes nothing", async () => {
+        checkProjectAccess.mockResolvedValue({
+            ok: true,
+            isCreator: false,
+            orgRole: null,
+            projectRole: "viewer",
+            project: { id: "p1", user_id: "owner", org_id: null },
+        });
+        expect((await request(app).delete("/projects/p1").set(...AUTH)).status).toBe(403);
+
+        checkProjectAccess.mockResolvedValue({
+            ok: true,
+            isCreator: true,
+            orgRole: null,
+            projectRole: "owner",
+            project: { id: "p1", user_id: "u1", org_id: null },
+        });
+        deleteProjectsByIds.mockResolvedValue(0);
+        expect((await request(app).delete("/projects/p1").set(...AUTH)).status).toBe(404);
+
+        expect(recordAudit).not.toHaveBeenCalled();
+    });
+
+    it("records a visibility change as its own event and a rename as project.updated", async () => {
+        checkProjectAccess.mockResolvedValue({
+            ok: true,
+            isCreator: true,
+            orgRole: "member",
+            projectRole: "owner",
+            project: { id: "p1", user_id: "u1", org_id: "org-1", visibility: "private" },
+        });
+        supabaseState.tables.projects = {
+            data: { id: "p1", name: "Acquisition", org_id: "org-1", visibility: "organization" },
+            error: null,
+        };
+
+        const res = await request(app)
+            .patch("/projects/p1")
+            .set(...AUTH)
+            .send({ name: "Acquisition", visibility: "organization" });
+
+        expect(res.status).toBe(200);
+        const actions = recordAudit.mock.calls.map(
+            (call: unknown[]) => (call[1] as { action: string }).action,
+        );
+        expect(actions).toEqual(["project.visibility_changed", "project.updated"]);
+        expect(recordAudit).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+                action: "project.visibility_changed",
+                orgId: "org-1",
+                projectId: "p1",
+                title: "Acquisition",
+                detail: {
+                    org_id: "org-1",
+                    previous_visibility: "private",
+                    visibility: "organization",
+                },
+            }),
+        );
+        expect(recordAudit).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+                action: "project.updated",
+                detail: { org_id: "org-1", fields: ["name"] },
+            }),
+        );
     });
 });

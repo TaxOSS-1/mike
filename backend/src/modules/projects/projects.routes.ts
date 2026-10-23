@@ -167,6 +167,7 @@ projectsRouter.get("/", requireAuth, asyncRoute(async (req, res) => {
 // POST /projects
 projectsRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
   const userId = res.locals.userId as string;
+  const userEmail = res.locals.userEmail as string | undefined;
   if (
     req.body &&
     typeof req.body === "object" &&
@@ -189,6 +190,7 @@ projectsRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
 
   const result = await createProject(db, {
     userId,
+    userEmail,
     name,
     cm_number,
     practice,
