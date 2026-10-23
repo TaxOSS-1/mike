@@ -138,7 +138,20 @@ for example, the Drive endpoint is
 
 - Connector bearer tokens, custom headers, and OAuth tokens are encrypted at
   rest using `MCP_CONNECTORS_ENCRYPTION_SECRET`.
-- Remote URLs are subject to Mike's outbound SSRF protections.
+- Remote URLs are subject to Mike's outbound SSRF protections: a connector
+  URL must use HTTPS and may not point at a loopback, private, link-local or
+  cloud-metadata address, and every redirect is re-checked.
+- A self-hosted deployment can exempt the services it runs beside Mike. The
+  operator lists exact origins (`scheme://host[:port]`, comma-separated) in
+  `TRUSTED_PRIVATE_ORIGINS` on the backend, for example
+  `http://tax-register:8080` for an MCP server on the same Compose network.
+  Only those origins may use plain HTTP and resolve to a private address; a
+  different port or scheme on the same host is not trusted, a credentialed URL
+  never is, and the link-local ranges that carry cloud metadata services
+  (`169.254.0.0/16`, `fe80::/10`) stay blocked. The list is validated at boot
+  and a malformed or forbidden entry stops the backend. The same exemption
+  applies to the other guarded outbound requests, such as a user's own
+  OpenAI-compatible model endpoint.
 - Connector tools are cached after successful registration and can be enabled
   or disabled from the connector's Manage dialog.
 
