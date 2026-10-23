@@ -10,6 +10,7 @@ import {
   validateEgressConfiguration,
   validateRuntimeConfiguration,
 } from "./lib/runtimeConfig";
+import { validateMailConfiguration } from "./lib/mail/mail";
 import { startAllWorkers, stopAllWorkers } from "./workerRuntime";
 import { reportError } from "./lib/observability/sentry";
 import {
@@ -37,6 +38,8 @@ async function validateBootConfiguration(): Promise<void> {
     validateRuntimeConfiguration();
     stage = "egress-config";
     validateEgressConfiguration();
+    stage = "mail-config";
+    validateMailConfiguration();
     stage = "manifest-key";
     const signingKey = manifestPublicKey();
     if (signingKey) {

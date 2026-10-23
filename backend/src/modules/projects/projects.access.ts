@@ -11,6 +11,7 @@ import {
   normalizeEmail,
 } from "../../lib/access";
 import { recordAudit } from "../../lib/audit";
+import { notify } from "../notifications/notifications.service";
 import { can } from "../../lib/permissions";
 import {
   deleteProjectGrant,
@@ -174,6 +175,17 @@ export async function grantProjectAccess(
         role,
       },
     });
+    if (role !== "deny" && target.member.userId !== userId)
+      await notify(db, {
+        userId: target.member.userId,
+        orgId: access.project.org_id,
+        kind: "project.shared",
+        title: `A project was shared with you as ${role}`,
+        href: `/projects/${projectId}`,
+        projectId,
+        subjectType: "project",
+        subjectId: projectId,
+      });
     return {
       ok: true,
       grant: {
@@ -228,6 +240,18 @@ export async function grantProjectAccess(
       role: typeof grant.role === "string" ? grant.role : role,
     },
   });
+  const grantedUserId = typeof grant.user_id === "string" ? grant.user_id : null;
+  if (grantedUserId && grantedUserId !== userId)
+    await notify(db, {
+      userId: grantedUserId,
+      orgId: null,
+      kind: "project.shared",
+      title: `A project was shared with you as ${typeof grant.role === "string" ? grant.role : role}`,
+      href: `/projects/${projectId}`,
+      projectId,
+      subjectType: "project",
+      subjectId: projectId,
+    });
   return { ok: true, grant };
 }
 

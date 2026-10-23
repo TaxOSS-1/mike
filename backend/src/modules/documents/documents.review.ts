@@ -8,6 +8,8 @@
 
 import { recordAudit } from "../../lib/audit";
 import { can, type ProjectRole } from "../../lib/permissions";
+import { listProjectPeople } from "../../lib/projectAccess";
+import { notify } from "../notifications/notifications.service";
 import { ensureDocumentAccess } from "./documents.access";
 import type { Db } from "./documents.shared";
 
@@ -93,14 +95,15 @@ export async function setVersionReviewState(
 
     const { data: current, error: readError } = await db
         .from("document_versions")
-        .select("id, version_number, filename, review_state")
+        .select("id, version_number, filename, review_state, reviewed_by")
         .eq("id", versionId)
         .eq("document_id", documentId)
         .is("deleted_at", null)
         .maybeSingle();
     if (readError || !current)
         return { ok: false, status: 404, detail: "Version not found" };
-    const previous = (current as { review_state?: string | null }).review_state ?? "draft";
+    const previousRow = current as { review_state?: string | null; reviewed_by?: string | null };
+    const previous = previousRow.review_state ?? "draft";
 
     const { data: updated, error } = await db
         .from("document_versions")
@@ -136,5 +139,77 @@ export async function setVersionReviewState(
             ...(note ? { note_length: note.length } : {}),
         },
     });
+    await notifyReviewers(db, {
+        state,
+        previousReviewer: previousRow.reviewed_by ?? null,
+        actorId: userId,
+        documentId,
+        projectId: access.doc.project_id ?? null,
+        project: {
+            id: access.doc.project_id ?? "",
+            user_id: access.doc.user_id ?? null,
+            org_id: access.doc.org_id ?? null,
+        },
+        filename: typeof row.filename === "string" ? row.filename : "a document",
+        versionNumber: typeof row.version_number === "number" ? row.version_number : null,
+    });
     return { ok: true, version: row };
+}
+
+/**
+ * Sending a version for review tells the project's Owners, who can approve
+ * it; approving tells whoever asked. The actor is never told about their own
+ * action, and a document outside a project has nobody to tell.
+ */
+async function notifyReviewers(
+    db: Db,
+    args: {
+        state: ReviewState;
+        previousReviewer: string | null;
+        actorId: string;
+        documentId: string;
+        projectId: string | null;
+        project: { id: string; user_id: string | null; org_id: string | null };
+        filename: string;
+        versionNumber: number | null;
+    },
+): Promise<void> {
+    if (!args.projectId) return;
+    const label = args.versionNumber ? `${args.filename} (version ${args.versionNumber})` : args.filename;
+    const href = `/projects/${args.projectId}`;
+    if (args.state === "in_review") {
+        const listed = await listProjectPeople(db, args.project);
+        if (!listed.ok) return;
+        const owners = new Set<string>();
+        if (listed.owner?.user_id) owners.add(listed.owner.user_id);
+        for (const member of listed.members)
+            if (member.role === "owner" && member.user_id) owners.add(member.user_id);
+        owners.delete(args.actorId);
+        for (const userId of owners)
+            await notify(db, {
+                userId,
+                orgId: args.project.org_id,
+                kind: "document.review_requested",
+                title: `Review requested: ${label}`,
+                href,
+                projectId: args.projectId,
+                documentId: args.documentId,
+                subjectType: "document_version",
+                subjectId: args.documentId,
+            });
+        return;
+    }
+    if (args.state === "approved" && args.previousReviewer && args.previousReviewer !== args.actorId) {
+        await notify(db, {
+            userId: args.previousReviewer,
+            orgId: args.project.org_id,
+            kind: "document.approved",
+            title: `Approved: ${label}`,
+            href,
+            projectId: args.projectId,
+            documentId: args.documentId,
+            subjectType: "document_version",
+            subjectId: args.documentId,
+        });
+    }
 }

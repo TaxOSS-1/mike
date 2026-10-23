@@ -309,6 +309,10 @@ services:
       # container/machine, set WORKERS_MODE=none here and enable the
       # `worker` service below.
       - WORKERS_MODE=${WORKERS_MODE:-thread}
+      # Email the product sends itself (invitations, notifications): captured
+      # by Mailpit locally, like GoTrue's messages. Not secrets.
+      - SMTP_URL=${SMTP_URL:-smtp://mailpit:1025}
+      - MAIL_FROM=${MAIL_FROM:-Mike <no-reply@mike.local>}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

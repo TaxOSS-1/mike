@@ -1681,6 +1681,62 @@ export interface ProjectPeople {
     admin_contacts?: ProjectContact[];
 }
 
+export type NotificationEmailMode = "immediate" | "daily" | "off";
+
+export interface AppNotification {
+    id: string;
+    kind: string;
+    title: string;
+    body: string | null;
+    href: string | null;
+    project_id: string | null;
+    document_id: string | null;
+    read_at: string | null;
+    emailed_at: string | null;
+    created_at: string;
+}
+
+export interface NotificationPreferences {
+    email_mode: NotificationEmailMode;
+    /** False when the deployment has no SMTP: the choice is kept, nothing is sent. */
+    email_configured: boolean;
+}
+
+export async function listNotifications(options: {
+    unreadOnly?: boolean;
+    limit?: number;
+} = {}): Promise<{ notifications: AppNotification[]; unread_count: number }> {
+    const params = new URLSearchParams();
+    if (options.unreadOnly) params.set("unread", "1");
+    if (options.limit) params.set("limit", String(options.limit));
+    const query = params.toString();
+    return apiRequest(`/user/notifications${query ? `?${query}` : ""}`);
+}
+
+export async function markNotificationsRead(
+    selection: { ids: string[] } | { all: true },
+): Promise<{ marked: number }> {
+    return apiRequest(`/user/notifications/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(selection),
+    });
+}
+
+export async function getNotificationPreferences(): Promise<NotificationPreferences> {
+    return apiRequest(`/user/notifications/preferences`);
+}
+
+export async function setNotificationPreferences(
+    emailMode: NotificationEmailMode,
+): Promise<NotificationPreferences> {
+    return apiRequest(`/user/notifications/preferences`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email_mode: emailMode }),
+    });
+}
+
 export type ProjectTaskStatus = "open" | "in_progress" | "done" | "cancelled";
 
 export interface ProjectTask {

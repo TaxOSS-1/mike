@@ -6,6 +6,8 @@ import type { ProjectRole } from "../../../lib/permissions";
 const mocks = vi.hoisted(() => ({
   access: vi.fn(),
   recordAudit: vi.fn(async (..._args: unknown[]) => {}),
+  notify: vi.fn(async (..._args: unknown[]) => null),
+  listProjectPeople: vi.fn(),
 }));
 vi.mock("../documents.access", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../documents.access")>()),
@@ -13,6 +15,13 @@ vi.mock("../documents.access", async (importOriginal) => ({
 }));
 vi.mock("../../../lib/audit", () => ({
   recordAudit: (...args: unknown[]) => mocks.recordAudit(...args),
+}));
+vi.mock("../../notifications/notifications.service", () => ({
+  notify: (...args: unknown[]) => mocks.notify(...args),
+}));
+vi.mock("../../../lib/projectAccess", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../lib/projectAccess")>()),
+  listProjectPeople: (...args: unknown[]) => mocks.listProjectPeople(...args),
 }));
 
 import {
@@ -46,11 +55,22 @@ function fakeDb() {
     q.single = async () => ({ data: terminal(), error: null });
     return q;
   };
-  return { from: () => chain(() => version) } as never;
+  // Reads hand back a copy, as a real client does: the service's "previous
+  // state" must not change under it when the update lands.
+  return { from: () => chain(() => (version ? { ...version } : null)) } as never;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.listProjectPeople.mockResolvedValue({
+    ok: true,
+    scope: "organization",
+    owner: { user_id: "creator", email: "c@example.com", display_name: "Creator", role: "owner" },
+    members: [
+      { user_id: "u1", email: "u1@test.local", display_name: "Editor", role: "editor" },
+      { user_id: "boss", email: "boss@example.com", display_name: "Boss", role: "owner" },
+    ],
+  });
   updates = [];
   version = {
     id: "v2",
@@ -120,11 +140,31 @@ describe("setVersionReviewState", () => {
     expect(mocks.recordAudit).not.toHaveBeenCalled();
   });
 
-  it("lets an editor send a version into review", async () => {
+  it("lets an editor send a version into review and tells the project's owners", async () => {
     mocks.access.mockResolvedValue(access("editor"));
     const result = await setVersionReviewState({ ...base, state: "in_review" }, fakeDb());
     expect(result.ok).toBe(true);
     expect(updates[0]).toMatchObject({ review_state: "in_review", review_note: null });
+    const told = mocks.notify.mock.calls.map((call) => (call[1] as { userId: string }).userId).sort();
+    expect(told).toEqual(["boss", "creator"]);
+    expect(mocks.notify.mock.calls[0][1]).toMatchObject({
+      kind: "document.review_requested",
+      title: "Review requested: return.pdf (version 2)",
+      href: "/projects/p1",
+    });
+  });
+
+  it("tells whoever asked for review when an owner approves, never the approver", async () => {
+    mocks.access.mockResolvedValue(access("owner"));
+    version = { ...version, review_state: "in_review", reviewed_by: "u2" };
+    await setVersionReviewState({ ...base, state: "approved" }, fakeDb());
+    expect(mocks.notify).toHaveBeenCalledTimes(1);
+    expect(mocks.notify.mock.calls[0][1]).toMatchObject({ userId: "u2", kind: "document.approved" });
+
+    mocks.notify.mockClear();
+    version = { ...version, review_state: "in_review", reviewed_by: "u1" };
+    await setVersionReviewState({ ...base, state: "approved" }, fakeDb());
+    expect(mocks.notify).not.toHaveBeenCalled();
   });
 
   it("refuses a viewer, keeps 404 for no verdict, and rejects unknown states", async () => {

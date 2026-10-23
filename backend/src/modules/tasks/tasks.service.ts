@@ -18,6 +18,7 @@ import {
   type ServiceResult,
 } from "../../lib/serviceResult";
 import type { Db } from "../../lib/supabase";
+import { notify } from "../notifications/notifications.service";
 
 export const TASK_STATUSES = ["open", "in_progress", "done", "cancelled"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
@@ -290,10 +291,83 @@ export async function createProjectTask(
     const people = row.assignee_user_id || row.assignee_email
       ? await projectPeople(db, access.project)
       : [];
+    await notifyAssignee(db, row, userId, access.project.org_id ?? null);
     return ok({ task: withNames([row], people)[0] });
   } catch (error) {
     return internalFailure(error);
   }
+}
+
+/** Tell the owner of a task about it, unless they gave it to themselves. */
+async function notifyAssignee(
+  db: Db,
+  task: TaskRow,
+  actorId: string,
+  orgId: string | null,
+): Promise<void> {
+  if (!task.assignee_user_id || task.assignee_user_id === actorId) return;
+  await notify(db, {
+    userId: task.assignee_user_id,
+    orgId,
+    kind: "task.assigned",
+    title: `Task assigned to you: ${task.title}`,
+    body: task.due_on ? `Due ${task.due_on}.` : null,
+    href: `/projects/${task.project_id}/tasks`,
+    projectId: task.project_id,
+    documentId: task.document_id,
+    subjectType: "task",
+    subjectId: task.id,
+  });
+}
+
+/**
+ * Once a day, remind every owner of an open task that is due within two
+ * days or overdue. Rate-limited per task by `notify`'s repeat window, so the
+ * hourly caller can run it freely; it only acts in its own hour.
+ */
+export async function runTaskReminderSweep(
+  db: Db,
+  options: { now?: Date; hourUtc?: number } = {},
+): Promise<number> {
+  const now = options.now ?? new Date();
+  const hour = options.hourUtc ?? taskReminderHourUtc();
+  if (now.getUTCHours() !== hour) return 0;
+  const horizon = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const today = now.toISOString().slice(0, 10);
+  const { data, error } = await db
+    .from("project_tasks")
+    .select(TASK_COLUMNS)
+    .in("status", ["open", "in_progress"])
+    .not("assignee_user_id", "is", null)
+    .lte("due_on", horizon)
+    .order("due_on", { ascending: true })
+    .limit(500);
+  if (error) throw new Error(error.message);
+  let sent = 0;
+  for (const row of (data ?? []) as unknown as TaskRow[]) {
+    if (!row.assignee_user_id || !row.due_on) continue;
+    const overdue = row.due_on < today;
+    const created = await notify(db, {
+      userId: row.assignee_user_id,
+      kind: overdue ? "task.overdue" : "task.due",
+      title: overdue ? `Overdue: ${row.title}` : `Due soon: ${row.title}`,
+      body: `Due ${row.due_on}.`,
+      href: `/projects/${row.project_id}/tasks`,
+      projectId: row.project_id,
+      documentId: row.document_id,
+      subjectType: "task",
+      subjectId: row.id,
+      once: true,
+    });
+    if (created) sent += 1;
+  }
+  return sent;
+}
+
+/** The UTC hour reminders go out; TASK_REMINDER_HOUR_UTC, default 6. */
+export function taskReminderHourUtc(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number.parseInt(env.TASK_REMINDER_HOUR_UTC ?? "", 10);
+  return Number.isInteger(raw) && raw >= 0 && raw <= 23 ? raw : 6;
 }
 
 export async function updateProjectTask(
@@ -396,6 +470,8 @@ export async function updateProjectTask(
     const people = row.assignee_user_id || row.assignee_email
       ? await projectPeople(db, access.project)
       : [];
+    if (changed.includes("assignee"))
+      await notifyAssignee(db, row, userId, access.project.org_id ?? null);
     return ok({ task: withNames([row], people)[0] });
   } catch (error) {
     return internalFailure(error);

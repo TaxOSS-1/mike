@@ -5,6 +5,10 @@ const mocks = vi.hoisted(() => ({
   checkProjectAccess: vi.fn(),
   listProjectPeople: vi.fn(),
   recordAudit: vi.fn(async (..._args: unknown[]) => {}),
+  notify: vi.fn(async (..._args: unknown[]) => null),
+}));
+vi.mock("../../notifications/notifications.service", () => ({
+  notify: (...args: unknown[]) => mocks.notify(...args),
 }));
 vi.mock("../../../lib/access", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../lib/access")>()),
@@ -137,6 +141,17 @@ describe("createProjectTask", () => {
       created_by: "u1",
       completed_at: null,
     });
+    expect(mocks.notify).toHaveBeenCalledWith(
+      fake.db,
+      expect.objectContaining({
+        userId: "u2",
+        kind: "task.assigned",
+        title: "Task assigned to you: File the FY2025 CIT return",
+        body: "Due 2026-11-30.",
+        href: "/projects/p1/tasks",
+        subjectId: "t1",
+      }),
+    );
     expect(mocks.recordAudit).toHaveBeenCalledWith(
       fake.db,
       expect.objectContaining({
