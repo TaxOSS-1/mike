@@ -124,11 +124,11 @@ describe("the sections each role is offered", () => {
     ]);
   });
 
-  it("offers a member General and Members only", async () => {
+  it("offers a member General, Members and Workspace profile", async () => {
     mocks.role = "member";
     renderShell();
     await screen.findByText("section for Elite Law LLP");
-    expect(sections()).toEqual(["General", "Members"]);
+    expect(sections()).toEqual(["General", "Members", "Workspace profile"]);
   });
 
   it("does not offer Bring Your Own Keys before the caller's role is known", () => {
@@ -145,7 +145,7 @@ describe("the sections each role is offered", () => {
     mocks.role = "member";
     await act(() => latest.reload());
 
-    expect(sections()).toEqual(["General", "Members"]);
+    expect(sections()).toEqual(["General", "Members", "Workspace profile"]);
   });
 });
 

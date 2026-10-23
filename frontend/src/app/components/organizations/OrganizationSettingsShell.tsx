@@ -222,6 +222,12 @@ export function OrganizationSettingsFrame({
               label: "Bring Your Own Keys",
               href: organizationSettingsHref(orgId, "providers"),
             },
+          ]
+        : []),
+      // Every member may read the profile (owners and admins edit it), once
+      // the caller's role is known.
+      ...(org !== null
+        ? [
             {
               id: "profile",
               label: "Workspace profile",
@@ -241,7 +247,7 @@ export function OrganizationSettingsFrame({
           ]
         : []),
     ],
-    [canManage, isOwner, orgId],
+    [canManage, isOwner, org, orgId],
   );
 
   return (
