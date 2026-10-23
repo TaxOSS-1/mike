@@ -27,6 +27,7 @@ import {
 } from "../../lib/documentTypes";
 import { deleteDocumentAndVersionFiles, type Db } from "./documents.shared";
 import { canManageDocument, ensureDocumentAccess } from "./documents.access";
+import { VERSION_REVIEW_COLUMNS } from "./documents.review";
 
 // ---------------------------------------------------------------------------
 // Versions list
@@ -56,7 +57,7 @@ export async function listVersions(
     const { data: rows } = await db
         .from("document_versions")
         .select(
-            "id, version_number, source, created_at, filename, file_type, size_bytes, page_count, textless_page_count, deleted_at, deleted_by",
+            `id, version_number, source, created_at, filename, file_type, size_bytes, page_count, textless_page_count, deleted_at, deleted_by, ${VERSION_REVIEW_COLUMNS}`,
         )
         .eq("document_id", documentId)
         .order("created_at", { ascending: true });
@@ -356,7 +357,7 @@ export async function renameVersion(
         .eq("document_id", documentId)
         .is("deleted_at", null)
         .select(
-            "id, version_number, source, created_at, filename, file_type, size_bytes, page_count, textless_page_count",
+            `id, version_number, source, created_at, filename, file_type, size_bytes, page_count, textless_page_count, ${VERSION_REVIEW_COLUMNS}`,
         )
         .single();
     if (error || !updated) {

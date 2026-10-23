@@ -68,6 +68,7 @@ export const ACTION_LABELS: Record<string, string> = {
   "document.uploaded": "Document uploaded",
   "document.generated": "Document generated",
   "document.edited": "Document edited",
+  "document.review_state_changed": "Version review state changed",
   "workflow.applied": "Workflow applied",
   "tabular.created": "Review created",
   "tabular.generated": "Review run completed",
@@ -115,6 +116,7 @@ export function auditAction(event: AuditEvent): string {
     "document.uploaded": "Document upload",
     "document.generated": "Document generation",
     "document.edited": "Document edit",
+    "document.review_state_changed": "Version review state change",
     "workflow.applied": "Workflow application",
     "tabular.created": "Review creation",
     "tabular.generated": "Review run",
@@ -255,6 +257,14 @@ export function auditDetailFields(event: AuditEvent): AuditDetailField[] {
   else if (event.action === "project.access.granted" && role)
     add("Role", auditLabel(role));
   else if (previous) add("Previous role", auditLabel(previous));
+  if (event.action === "document.review_state_changed") {
+    const before = detailText(event, "previous_state");
+    const after = detailText(event, "review_state");
+    if (before && after)
+      add("Review state", `${auditLabel(before)} → ${auditLabel(after)}`);
+    else if (after) add("Review state", auditLabel(after));
+    add("Version", detail.version_number);
+  }
   if (event.action === "project.visibility_changed") {
     const before = detailText(event, "previous_visibility");
     const after = detailText(event, "visibility");

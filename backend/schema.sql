@@ -1326,6 +1326,12 @@ create table if not exists public.document_versions (
   deleted_at timestamptz,
   deleted_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now(),
+  -- Review state of these bytes: a new version starts as a draft again.
+  -- reviewed_by/reviewed_at record who set the current state and when.
+  review_state text not null default 'draft',
+  reviewed_by uuid references auth.users(id) on delete set null,
+  reviewed_at timestamptz,
+  review_note text,
   constraint document_versions_source_check
     check (source = any (array[
       'upload'::text,
@@ -1334,7 +1340,11 @@ create table if not exists public.document_versions (
       'user_accept'::text,
       'user_reject'::text,
       'generated'::text
-    ]))
+    ])),
+  constraint document_versions_review_state_check
+    check (review_state in ('draft', 'in_review', 'approved')),
+  constraint document_versions_review_note_check
+    check (review_note is null or char_length(review_note) <= 2000)
 );
 
 create index if not exists document_versions_document_id_idx
@@ -11069,5 +11079,6 @@ insert into public.schema_migrations (filename) values
   ('20261021_02_user_subagent_defaults.sql'),
   ('20261021_03_user_response_details.sql'),
   ('20261021_04_word_chat_message_playbook.sql'),
-  ('20261022_01_workspace_connectors.sql')
+  ('20261022_01_workspace_connectors.sql'),
+  ('20261023_02_document_version_review_state.sql')
 on conflict (filename) do nothing;

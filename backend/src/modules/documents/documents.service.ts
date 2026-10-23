@@ -44,6 +44,14 @@ export {
 } from "./documents.edits";
 
 export {
+    setVersionReviewState,
+    isReviewState,
+    canSetReviewState,
+    REVIEW_STATES,
+    type ReviewState,
+} from "./documents.review";
+
+export {
     applyTrackedEditsToDocument,
     loadCurrentVersionBytes,
 } from "./documents.trackedEdits";
