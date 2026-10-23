@@ -157,6 +157,7 @@ function activeSectionFromSegments(
 ): ProjectWorkspaceSection {
     if (segments[0] === "assistant") return "assistant";
     if (segments[0] === "tabular-reviews") return "reviews";
+    if (segments[0] === "tasks") return "tasks";
     return "documents";
 }
 
@@ -164,7 +165,11 @@ function shouldShowWorkspaceShell(segments: string[]) {
     if (segments.length === 0) return true;
     if (segments.length === 2 && segments[0] === "folders") return true;
     if (segments.length !== 1) return false;
-    return segments[0] === "assistant" || segments[0] === "tabular-reviews";
+    return (
+        segments[0] === "assistant" ||
+        segments[0] === "tabular-reviews" ||
+        segments[0] === "tasks"
+    );
 }
 
 export function ProjectWorkspaceProvider({
@@ -179,7 +184,7 @@ export function ProjectWorkspaceProvider({
     const [projectLoading, setProjectLoading] = useState(true);
     const [searchBySection, setSearchBySection] = useState<
         Record<ProjectWorkspaceSection, string>
-    >({ documents: "", assistant: "", reviews: "" });
+    >({ documents: "", assistant: "", reviews: "", tasks: "" });
     const [projectChats, setProjectChats] = useState<Chat[] | null>(null);
     const [projectChatsLoading, setProjectChatsLoading] = useState(false);
     const [accessModalOpen, setAccessModalOpen] = useState(false);
@@ -751,6 +756,7 @@ export function ProjectSectionToolbar({
                           { id: "documents", label: "Documents" },
                           { id: "assistant", label: "Chats" },
                           { id: "reviews", label: "Tabular Reviews" },
+                          { id: "tasks", label: "Tasks" },
                       ]
             }
             active={activeSection}
@@ -760,7 +766,9 @@ export function ProjectSectionToolbar({
                         ? `/projects/${projectId}/assistant`
                         : next === "reviews"
                           ? `/projects/${projectId}/tabular-reviews`
-                          : `/projects/${projectId}`;
+                          : next === "tasks"
+                            ? `/projects/${projectId}/tasks`
+                            : `/projects/${projectId}`;
                 router.push(href);
             }}
             leading={

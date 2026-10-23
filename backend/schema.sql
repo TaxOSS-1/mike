@@ -1354,6 +1354,47 @@ create index if not exists document_versions_active_document_id_idx
   on public.document_versions(document_id, created_at desc)
   where deleted_at is null;
 
+-- Tasks on a project: a title, an owner, a due date and a status, optionally
+-- tied to one document (20261023_03). The assignee must already have access
+-- to the project; assignee_email keeps the task legible after the account is
+-- gone, and created_by is provenance only, like projects.user_id.
+create table if not exists public.project_tasks (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.projects(id) on delete cascade,
+  document_id uuid references public.documents(id) on delete set null,
+  title text not null,
+  description text,
+  status text not null default 'open',
+  assignee_user_id uuid references auth.users(id) on delete set null,
+  assignee_email text,
+  due_on date,
+  created_by uuid references auth.users(id) on delete set null,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint project_tasks_title_check
+    check (char_length(title) between 1 and 300),
+  constraint project_tasks_description_check
+    check (description is null or char_length(description) <= 4000),
+  constraint project_tasks_status_check
+    check (status in ('open', 'in_progress', 'done', 'cancelled')),
+  constraint project_tasks_assignee_email_check
+    check (assignee_email is null or assignee_email = lower(assignee_email))
+);
+
+create index if not exists project_tasks_project_status_due_idx
+  on public.project_tasks(project_id, status, due_on);
+create index if not exists project_tasks_assignee_open_idx
+  on public.project_tasks(assignee_user_id, due_on)
+  where status in ('open', 'in_progress');
+create index if not exists project_tasks_document_idx
+  on public.project_tasks(document_id)
+  where document_id is not null;
+
+alter table public.project_tasks enable row level security;
+revoke all on public.project_tasks from anon, authenticated;
+grant select, insert, update, delete on public.project_tasks to service_role;
+
 create index if not exists document_versions_doc_vnum_idx
   on public.document_versions(document_id, version_number);
 
@@ -11080,5 +11121,6 @@ insert into public.schema_migrations (filename) values
   ('20261021_03_user_response_details.sql'),
   ('20261021_04_word_chat_message_playbook.sql'),
   ('20261022_01_workspace_connectors.sql'),
-  ('20261023_02_document_version_review_state.sql')
+  ('20261023_02_document_version_review_state.sql'),
+  ('20261023_03_project_tasks.sql')
 on conflict (filename) do nothing;

@@ -69,6 +69,10 @@ export const ACTION_LABELS: Record<string, string> = {
   "document.generated": "Document generated",
   "document.edited": "Document edited",
   "document.review_state_changed": "Version review state changed",
+  "task.created": "Task created",
+  "task.updated": "Task changed",
+  "task.completed": "Task completed",
+  "task.deleted": "Task deleted",
   "workflow.applied": "Workflow applied",
   "tabular.created": "Review created",
   "tabular.generated": "Review run completed",
@@ -117,6 +121,10 @@ export function auditAction(event: AuditEvent): string {
     "document.generated": "Document generation",
     "document.edited": "Document edit",
     "document.review_state_changed": "Version review state change",
+    "task.created": "Task creation",
+    "task.updated": "Task change",
+    "task.completed": "Task completion",
+    "task.deleted": "Task deletion",
     "workflow.applied": "Workflow application",
     "tabular.created": "Review creation",
     "tabular.generated": "Review run",
@@ -173,6 +181,7 @@ export function auditSubject(event: AuditEvent) {
   else if (action.startsWith("project.access.")) type = "Recipient";
   else if (action.startsWith("project.")) type = "Project";
   else if (action.startsWith("document.")) type = "Document";
+  else if (action.startsWith("task.")) type = "Task";
   else if (action.startsWith("chat.")) type = "Chat";
   else if (action.startsWith("workflow.")) type = "Workflow";
   else if (action.startsWith("tabular.") || action === "export.tabular")
@@ -257,6 +266,12 @@ export function auditDetailFields(event: AuditEvent): AuditDetailField[] {
   else if (event.action === "project.access.granted" && role)
     add("Role", auditLabel(role));
   else if (previous) add("Previous role", auditLabel(previous));
+  if (event.action.startsWith("task.")) {
+    const status = detailText(event, "status");
+    if (status) add("Status", auditLabel(status));
+    add("Due", detailText(event, "due_on"));
+    add("Assignee", detailText(event, "target_email"));
+  }
   if (event.action === "document.review_state_changed") {
     const before = detailText(event, "previous_state");
     const after = detailText(event, "review_state");

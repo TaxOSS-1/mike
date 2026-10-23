@@ -29,6 +29,7 @@ import { tableTreeCellStyle } from "@/app/components/shared/TablePrimitive";
 
 export type ProjectWorkspaceSection =
     | "documents"
+    | "tasks"
     | "assistant"
     | "reviews";
 
@@ -574,7 +575,9 @@ export function ProjectPageHeader({
                     ? [{ label: "Chats" }]
                     : activeSection === "reviews"
                       ? [{ label: "Tabular Reviews" }]
-                      : (documentFolderBreadcrumbs ?? [])),
+                      : activeSection === "tasks"
+                        ? [{ label: "Tasks" }]
+                        : (documentFolderBreadcrumbs ?? [])),
             ]}
             actionGroups={[
                 [

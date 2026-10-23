@@ -30,6 +30,7 @@ import {
   projectMemoryRouter,
   userMemoryRouter,
 } from "./modules/memory/memory.routes";
+import { projectTasksRouter } from "./modules/tasks/tasks.routes";
 import { playbooksRouter } from "./modules/playbooks/playbooks.routes";
 import { manifestPublicKey } from "./lib/manifestSigning";
 import {
@@ -336,6 +337,7 @@ app.use("/chat", chatRouter);
 app.use("/word-chat", wordChatRouter);
 app.use("/models", modelsRouter);
 app.use("/projects/:projectId/memory", projectMemoryRouter);
+app.use("/projects/:projectId/tasks", projectTasksRouter);
 app.use("/projects", projectsRouter);
 app.use("/orgs", orgsRouter);
 app.use("/projects/:projectId/chat", projectChatRouter);

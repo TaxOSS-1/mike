@@ -1681,6 +1681,78 @@ export interface ProjectPeople {
     admin_contacts?: ProjectContact[];
 }
 
+export type ProjectTaskStatus = "open" | "in_progress" | "done" | "cancelled";
+
+export interface ProjectTask {
+    id: string;
+    project_id: string;
+    document_id: string | null;
+    title: string;
+    description: string | null;
+    status: ProjectTaskStatus;
+    assignee_user_id: string | null;
+    assignee_email: string | null;
+    assignee_display_name: string | null;
+    /** A calendar date as YYYY-MM-DD. */
+    due_on: string | null;
+    created_by: string | null;
+    completed_at: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface ProjectTaskInput {
+    title?: string;
+    description?: string | null;
+    status?: ProjectTaskStatus;
+    due_on?: string | null;
+    document_id?: string | null;
+    /** The email of a person with access to the project; null unassigns. */
+    assignee_email?: string | null;
+}
+
+export async function listProjectTasks(
+    projectId: string,
+    status: "open" | "done" | "all" = "open",
+): Promise<ProjectTask[]> {
+    const res = await apiRequest<{ tasks: ProjectTask[] }>(
+        `/projects/${projectId}/tasks?status=${status}`,
+    );
+    return res.tasks;
+}
+
+export async function createProjectTask(
+    projectId: string,
+    input: ProjectTaskInput,
+): Promise<ProjectTask> {
+    return apiRequest<ProjectTask>(`/projects/${projectId}/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+}
+
+export async function updateProjectTask(
+    projectId: string,
+    taskId: string,
+    patch: ProjectTaskInput,
+): Promise<ProjectTask> {
+    return apiRequest<ProjectTask>(`/projects/${projectId}/tasks/${taskId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+    });
+}
+
+export async function deleteProjectTask(
+    projectId: string,
+    taskId: string,
+): Promise<{ deleted_task_id: string }> {
+    return apiRequest(`/projects/${projectId}/tasks/${taskId}`, {
+        method: "DELETE",
+    });
+}
+
 export async function getProjectPeople(
     projectId: string,
 ): Promise<ProjectPeople> {
