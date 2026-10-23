@@ -1,10 +1,23 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appDomain, appName, assistantPersona } from "../branding";
 
+const KEYS = ["APP_NAME", "APP_ASSISTANT_PERSONA", "APP_DOMAIN"] as const;
+const saved: Partial<Record<(typeof KEYS)[number], string | undefined>> = {};
+
+// Each test starts from an unset environment, whatever the process was
+// started with, and leaves it as it found it.
+beforeEach(() => {
+    for (const key of KEYS) {
+        saved[key] = process.env[key];
+        delete process.env[key];
+    }
+});
+
 afterEach(() => {
-    delete process.env.APP_NAME;
-    delete process.env.APP_ASSISTANT_PERSONA;
-    delete process.env.APP_DOMAIN;
+    for (const key of KEYS) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+    }
 });
 
 describe("branding", () => {

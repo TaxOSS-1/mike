@@ -22,9 +22,9 @@ describe("appName", () => {
         expect((await load()).APP_NAME).toBe("Acme Assist");
     });
 
-    it("takes the Word add-in's name when the web app's is unset", async () => {
+    it("ignores the Word add-in's variable; its build maps it to NEXT_PUBLIC_APP_NAME itself", async () => {
         vi.stubEnv("NEXT_PUBLIC_APP_NAME", "");
         vi.stubEnv("REACT_APP_APP_NAME", "Acme Assist");
-        expect((await load()).APP_NAME).toBe("Acme Assist");
+        expect((await load()).APP_NAME).toBe("Mike");
     });
 });
