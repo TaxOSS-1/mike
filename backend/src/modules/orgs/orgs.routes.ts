@@ -421,12 +421,9 @@ orgsRouter.delete(
     }),
 );
 
-// POST /orgs/:orgId/invitations/:invitationId/resend — refresh expiry.
-//
-// The repository has no outbound email infrastructure, so "resend" moves the
-// expiry window rather than re-delivering a message; the invitation surfaces
-// in-app through GET /user/invitations either way. Wiring a mailer in would
-// mean adding a dependency this PR deliberately does not take on.
+// POST /orgs/:orgId/invitations/:invitationId/resend — refresh expiry and,
+// when the deployment has SMTP configured (lib/mail), send the message again.
+// The invitation surfaces in-app through GET /user/invitations either way.
 orgsRouter.post(
     "/:orgId/invitations/:invitationId/resend",
     requireOrgAuth,

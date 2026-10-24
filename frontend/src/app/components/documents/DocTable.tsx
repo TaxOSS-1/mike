@@ -26,6 +26,8 @@ import {
     deleteDocumentVersion,
     failedUploadMessage,
     renameDocumentVersion,
+    setDocumentVersionReview,
+    type DocumentVersionReviewState,
     type DocumentVersion,
     type UploadOutcome,
     type UploadProgress,
@@ -769,6 +771,38 @@ export function DocTable({
             return next;
         });
         return res;
+    }
+
+    /**
+     * Set a version's review state and update the local cache in place. The
+     * server decides who may approve (a project Owner); an editor's attempt is
+     * reported as a refusal rather than guessed at here.
+     */
+    async function handleSetVersionReviewState(
+        docId: string,
+        versionId: string,
+        state: DocumentVersionReviewState,
+    ) {
+        if (!requireCapability("content.edit", "change a version's review state", "editor"))
+            return;
+        try {
+            const updated = await setDocumentVersionReview(docId, versionId, state);
+            setVersionsByDocId((prev) => {
+                const cached = prev.get(docId);
+                if (!cached) return prev;
+                const next = new Map(prev);
+                next.set(docId, {
+                    ...cached,
+                    versions: cached.versions.map((v) => (v.id === versionId ? updated : v)),
+                });
+                return next;
+            });
+        } catch (e) {
+            notifyError(e, {
+                action: "change the version's review state",
+                onRetry: () => handleSetVersionReviewState(docId, versionId, state),
+            });
+        }
     }
 
     /**
@@ -3019,6 +3053,9 @@ export function DocTable({
                                     onRenameVersion={(versionId, filename) =>
                                         handleRenameVersion(doc.id, versionId, filename)
                                     }
+                                    onSetReviewState={(versionId, state) =>
+                                        handleSetVersionReviewState(doc.id, versionId, state)
+                                    }
                                     onExtensionChangeBlocked={(filename) =>
                                         setDocumentRenameWarning(extensionChangeWarning(filename))
                                     }
@@ -4983,6 +5020,13 @@ export function DocTable({
                                                                 }}
                                                                 onRenameVersion={(versionId, filename) =>
                                                                     handleRenameVersion(doc.id, versionId, filename)
+                                                                }
+                                                                onSetReviewState={(versionId, state) =>
+                                                                    handleSetVersionReviewState(
+                                                                        doc.id,
+                                                                        versionId,
+                                                                        state,
+                                                                    )
                                                                 }
                                                                 onExtensionChangeBlocked={(filename) =>
                                                                     setDocumentRenameWarning(

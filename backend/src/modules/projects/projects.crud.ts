@@ -2,6 +2,7 @@
 // delete, and the tamper-evident export manifest.
 
 import { chunkArray } from "../../lib/arrays";
+import { recordAudit } from "../../lib/audit";
 import {
   attachActiveVersionPaths,
   attachLatestVersionNumbers,
@@ -574,6 +575,7 @@ export async function createProject(
   db: Db,
   args: {
     userId: string;
+    userEmail?: string;
     name: unknown;
     cm_number?: string;
     practice?: string;
@@ -582,7 +584,8 @@ export async function createProject(
     memory_enabled?: boolean;
   },
 ): Promise<CreateProjectResult> {
-  const { userId, name, cm_number, practice, org_id, memory_enabled } = args;
+  const { userId, userEmail, name, cm_number, practice, org_id, memory_enabled } =
+    args;
   if (typeof name !== "string" || !name.trim())
     return { ok: false, kind: "validation", detail: "name is required" };
   if (memory_enabled !== undefined && typeof memory_enabled !== "boolean") {
@@ -647,6 +650,18 @@ export async function createProject(
     if (visibilityError)
       return { ok: false, kind: "db_error", error: visibilityError };
   }
+  // The project's own audit trail starts here, so an organization's admins can
+  // see who opened which matter and how (private or organization-wide).
+  await recordAudit(db, {
+    userId,
+    userEmail,
+    orgId: resolvedOrgId,
+    action: "project.created",
+    title: name.trim(),
+    surface: "project",
+    projectId: (data as { id: string }).id,
+    detail: { org_id: resolvedOrgId, visibility },
+  });
   return {
     ok: true,
     project: {
@@ -888,6 +903,42 @@ export async function updateProject(
     .single();
   if (error || !data) return { ok: false, kind: "not_found" };
 
+  // Opening or closing a project is an access decision and gets its own
+  // event; renames and metadata edits share one, naming only the fields.
+  const updated = data as { name?: string | null };
+  const previousVisibility = access.project.visibility ?? "private";
+  const changedFields = Object.keys(updates).filter(
+    (field) => field !== "visibility",
+  );
+  if (updates.visibility && updates.visibility !== previousVisibility) {
+    await recordAudit(db, {
+      userId,
+      userEmail,
+      orgId: access.project.org_id ?? null,
+      action: "project.visibility_changed",
+      title: updated.name ?? null,
+      surface: "project",
+      projectId,
+      detail: {
+        org_id: access.project.org_id ?? null,
+        previous_visibility: previousVisibility,
+        visibility: updates.visibility,
+      },
+    });
+  }
+  if (changedFields.length > 0) {
+    await recordAudit(db, {
+      userId,
+      userEmail,
+      orgId: access.project.org_id ?? null,
+      action: "project.updated",
+      title: updated.name ?? null,
+      surface: "project",
+      projectId,
+      detail: { org_id: access.project.org_id ?? null, fields: changedFields },
+    });
+  }
+
   const [{ data: docs }, { data: folderData }] = await Promise.all([
     db.from("documents").select("*").eq("project_id", projectId).order("created_at", { ascending: true }),
     db.from("project_subfolders").select("*").eq("project_id", projectId).order("created_at", { ascending: true }),
@@ -940,15 +991,47 @@ export async function deleteProject(
       kind: "forbidden",
       detail: "Only a project owner can delete this project.",
     };
+  // The name is read before the cascade removes it; the event itself is
+  // written after, so a refused or failed delete leaves no "deleted" entry.
+  // org_id travels in the event because the trigger that derives it from
+  // project_id finds no project any more.
+  const name = await projectNameForAudit(db, projectId);
   try {
     // Delete by id, not by owner: the capability check above is what
     // authorises this, and an organization project may have no creator left
     // to scope by (user_id goes NULL when that account is deleted).
     const deletedCount = await deleteProjectsByIds(db, [projectId]);
     if (deletedCount === 0) return { ok: false, kind: "not_found" };
-    return { ok: true };
   } catch (err) {
     return { ok: false, kind: "error", error: err };
+  }
+  await recordAudit(db, {
+    userId,
+    userEmail,
+    orgId: access.project.org_id ?? null,
+    action: "project.deleted",
+    title: name,
+    surface: "project",
+    projectId,
+    detail: { org_id: access.project.org_id ?? null },
+  });
+  return { ok: true };
+}
+
+async function projectNameForAudit(
+  db: Db,
+  projectId: string,
+): Promise<string | null> {
+  try {
+    const { data } = await db
+      .from("projects")
+      .select("name")
+      .eq("id", projectId)
+      .maybeSingle();
+    const name = (data as { name?: unknown } | null)?.name;
+    return typeof name === "string" && name.trim() ? name : null;
+  } catch {
+    return null;
   }
 }
 

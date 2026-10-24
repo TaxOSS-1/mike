@@ -62,10 +62,21 @@ export const ACTION_LABELS: Record<string, string> = {
   "org.member.removed": "Member removed",
   "org.member.left": "Member left",
   "org.data.deleted": "Organization data deleted",
+  "project.created": "Project created",
+  "project.updated": "Project settings changed",
+  "project.visibility_changed": "Project visibility changed",
+  "project.deleted": "Project deleted",
+  "project.access.granted": "Project shared",
+  "project.access.revoked": "Project access removed",
   "chat.message": "Chat message sent",
   "document.uploaded": "Document uploaded",
   "document.generated": "Document generated",
   "document.edited": "Document edited",
+  "document.review_state_changed": "Version review state changed",
+  "task.created": "Task created",
+  "task.updated": "Task changed",
+  "task.completed": "Task completed",
+  "task.deleted": "Task deleted",
   "workflow.applied": "Workflow applied",
   "tabular.created": "Review created",
   "tabular.generated": "Review run completed",
@@ -103,10 +114,21 @@ export function auditAction(event: AuditEvent): string {
   // Failed or cancelled operations must not read as successful changes.
   if (event.status === "completed") return label;
   const operations: Record<string, string> = {
+    "project.created": "Project creation",
+    "project.updated": "Project settings change",
+    "project.visibility_changed": "Project visibility change",
+    "project.deleted": "Project deletion",
+    "project.access.granted": "Project sharing",
+    "project.access.revoked": "Project access removal",
     "chat.message": "Chat message",
     "document.uploaded": "Document upload",
     "document.generated": "Document generation",
     "document.edited": "Document edit",
+    "document.review_state_changed": "Version review state change",
+    "task.created": "Task creation",
+    "task.updated": "Task change",
+    "task.completed": "Task completion",
+    "task.deleted": "Task deletion",
     "workflow.applied": "Workflow application",
     "tabular.created": "Review creation",
     "tabular.generated": "Review run",
@@ -160,7 +182,10 @@ export function auditSubject(event: AuditEvent) {
   else if (action.startsWith("org.departure.item."))
     type = auditLabel(detailText(event, "kind") ?? "item");
   else if (action.startsWith("org.")) type = "Organization";
+  else if (action.startsWith("project.access.")) type = "Recipient";
+  else if (action.startsWith("project.")) type = "Project";
   else if (action.startsWith("document.")) type = "Document";
+  else if (action.startsWith("task.")) type = "Task";
   else if (action.startsWith("chat.")) type = "Chat";
   else if (action.startsWith("workflow.")) type = "Workflow";
   else if (action.startsWith("tabular.") || action === "export.tabular")
@@ -242,7 +267,37 @@ export function auditDetailFields(event: AuditEvent): AuditDetailField[] {
     else if (previous) add("Previous role", auditLabel(previous));
   } else if (event.action.startsWith("org.invite.") && role)
     add("Invited role", auditLabel(role));
+  else if (event.action === "project.access.granted" && role)
+    add("Role", auditLabel(role));
   else if (previous) add("Previous role", auditLabel(previous));
+  if (event.action.startsWith("task.")) {
+    const status = detailText(event, "status");
+    if (status) add("Status", auditLabel(status));
+    add("Due", detailText(event, "due_on"));
+    add("Assignee", detailText(event, "target_email"));
+  }
+  if (event.action === "document.review_state_changed") {
+    const before = detailText(event, "previous_state");
+    const after = detailText(event, "review_state");
+    if (before && after)
+      add("Review state", `${auditLabel(before)} → ${auditLabel(after)}`);
+    else if (after) add("Review state", auditLabel(after));
+    add("Version", detail.version_number);
+  }
+  if (event.action === "project.visibility_changed") {
+    const before = detailText(event, "previous_visibility");
+    const after = detailText(event, "visibility");
+    if (before && after)
+      add("Visibility", `${auditLabel(before)} → ${auditLabel(after)}`);
+    else if (after) add("Visibility", auditLabel(after));
+  } else if (event.action === "project.created") {
+    const visibility = detailText(event, "visibility");
+    if (visibility) add("Visibility", auditLabel(visibility));
+  } else if (event.action === "project.updated") {
+    const fields = detail.fields;
+    if (Array.isArray(fields) && fields.every((f) => typeof f === "string"))
+      add("Changed", fields.map((f) => auditLabel(f)).join(", "));
+  }
   if (
     event.action.startsWith("org.departure.") ||
     event.action.startsWith("org.member.")
@@ -283,6 +338,12 @@ export function auditSummary(event: AuditEvent, personal: boolean): string {
     event.action === "org.invite.resent"
   )
     return `${actor} ${event.action.endsWith("resent") ? "resent an invitation to" : "invited"} ${name}.`;
+  if (event.action === "project.created") return `${actor} created ${name}.`;
+  if (event.action === "project.deleted") return `${actor} deleted ${name}.`;
+  if (event.action === "project.access.granted")
+    return `${actor} shared the project with ${name}.`;
+  if (event.action === "project.access.revoked")
+    return `${actor} removed project access for ${name}.`;
   if (event.action === "document.uploaded") return `${actor} uploaded ${name}.`;
   if (event.action === "document.edited") return `${actor} edited ${name}.`;
   if (event.action === "document.generated")

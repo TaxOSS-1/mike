@@ -63,6 +63,7 @@ infrastructure, and development workflow, including optional local integrations.
 | [Mailpit](https://github.com/axllent/mailpit) | Capturing email during local development. |
 | [Sentry JavaScript SDKs](https://github.com/getsentry/sentry-javascript) | Error reporting across the backend, web app, and Word add-in. |
 | [Undici](https://github.com/nodejs/undici) | Backend HTTP requests. |
+| [Nodemailer](https://nodemailer.com/) | Outbound email over SMTP (invitations, notifications). |
 
 ## Development and testing
 

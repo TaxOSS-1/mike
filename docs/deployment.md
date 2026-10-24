@@ -358,6 +358,22 @@ test every link against the deployed frontend before inviting users. Existing
 deployments must also apply the latest migration so confirmed email changes are
 mirrored into `user_profiles`.
 
+## Email from Mike itself
+
+Beyond authentication, Mike sends a few messages of its own: an invitation to
+an organization, a notification (a task assigned, a project shared, a version
+sent for review or approved), the daily digest of notifications for people who
+chose one, and reminders of tasks due within two days or overdue. They go out
+over SMTP when the backend has both `SMTP_URL` (`smtp://user:pass@host:587`
+or `smtps://…`) and `MAIL_FROM` (`Mike <no-reply@example.com>`). Set neither
+and email stays off: invitations still wait under Settings > Organizations,
+notifications still appear under Settings > Notifications. A half
+configuration stops the backend at boot. The Compose stack points both at
+Mailpit. Each person chooses under Settings > Notifications whether to be
+emailed at once, once a day, or not at all; `NOTIFICATIONS_DIGEST_HOUR_UTC`
+(default 7) and `TASK_REMINDER_HOUR_UTC` (default 6) set when the daily
+messages go.
+
 ## Google authentication
 
 Create a **Web application** OAuth client in Google Auth Platform. Its

@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import {
     Brain,
+    ClipboardCheck,
     CornerDownRight,
     Loader2,
     Pencil,
@@ -16,14 +17,19 @@ import {
 } from "@/app/components/shared/PageHeader";
 import { FileTypeIcon } from "@/app/components/shared/FileTypeIcon";
 import type { Project } from "@/app/components/shared/types";
-import type { DocumentVersion } from "@/app/lib/mikeApi";
+import type {
+    DocumentVersion,
+    DocumentVersionReviewState,
+} from "@/app/lib/mikeApi";
 import { RowActions } from "@/app/components/shared/RowActions";
+import { DropdownItem } from "@/shared/ui/dropdown";
 import { HeaderActionsMenu } from "@/app/components/shared/HeaderActionsMenu";
 import { DocumentUploadMenu } from "@/app/components/shared/DocumentUploadMenu";
 import { tableTreeCellStyle } from "@/app/components/shared/TablePrimitive";
 
 export type ProjectWorkspaceSection =
     | "documents"
+    | "tasks"
     | "assistant"
     | "reviews";
 
@@ -86,6 +92,44 @@ export function DocIcon({
     );
 }
 
+const REVIEW_STATE_LABELS: Record<DocumentVersionReviewState, string> = {
+    draft: "Draft",
+    in_review: "In review",
+    approved: "Approved",
+};
+
+/** Plain text for the row; a draft says nothing, as every version starts there. */
+export function reviewStateLabel(
+    state: DocumentVersionReviewState | null | undefined,
+): string | null {
+    if (!state || state === "draft") return null;
+    return REVIEW_STATE_LABELS[state] ?? null;
+}
+
+/** The transitions offered from `current`, as row-menu items. */
+export function reviewStateItems(
+    current: DocumentVersionReviewState | null | undefined,
+    onChoose: (state: DocumentVersionReviewState) => void,
+) {
+    const state = current ?? "draft";
+    const options: { state: DocumentVersionReviewState; label: string }[] = [];
+    if (state !== "in_review")
+        options.push({ state: "in_review", label: "Send for review" });
+    if (state !== "approved")
+        options.push({ state: "approved", label: "Mark approved" });
+    if (state !== "draft")
+        options.push({ state: "draft", label: "Back to draft" });
+    return options.map((option) => (
+        <DropdownItem
+            key={option.state}
+            onSelect={() => onChoose(option.state)}
+        >
+            <ClipboardCheck className="h-3.5 w-3.5" />
+            {option.label}
+        </DropdownItem>
+    ));
+}
+
 export function DocVersionHistory({
     docId,
     filename,
@@ -97,6 +141,7 @@ export function DocVersionHistory({
     onDownloadVersion,
     onOpenVersion,
     onRenameVersion,
+    onSetReviewState,
     onExtensionChangeBlocked,
     showCreator = false,
 }: {
@@ -116,6 +161,14 @@ export function DocVersionHistory({
     onRenameVersion?: (
         versionId: string,
         filename: string | null,
+    ) => Promise<void> | void;
+    /**
+     * Offered when the caller may change a version's review state; the
+     * server still decides (approving takes a project Owner).
+     */
+    onSetReviewState?: (
+        versionId: string,
+        state: DocumentVersionReviewState,
     ) => Promise<void> | void;
     onExtensionChangeBlocked?: (filename: string) => void;
     /** Keeps the rows aligned with a table that shows a Creator column. */
@@ -237,6 +290,7 @@ export function DocVersionHistory({
                           minute: "2-digit",
                       });
                 const isEditing = editingVersionId === v.id;
+                const reviewLabel = reviewStateLabel(v.review_state);
                 const rowBg = isDeleted ? "bg-gray-50" : "bg-gray-100";
                 const hoverBg = isDeleted ? "hover:bg-gray-50" : "hover:bg-gray-200";
                 return (
@@ -310,6 +364,12 @@ export function DocVersionHistory({
                                             </span>
                                         )}
                                         {displayLabel}
+                                        {!isDeleted && reviewLabel && (
+                                            <span className="text-gray-500">
+                                                {" · "}
+                                                {reviewLabel}
+                                            </span>
+                                        )}
                                     </span>
                                 )}
                             </div>
@@ -381,6 +441,21 @@ export function DocVersionHistory({
                                             v.id,
                                             downloadFilename,
                                         )
+                                    }
+                                    renderItems={
+                                        onSetReviewState
+                                            ? (onActionChosen) =>
+                                                  reviewStateItems(
+                                                      v.review_state,
+                                                      (state) => {
+                                                          onActionChosen();
+                                                          void onSetReviewState(
+                                                              v.id,
+                                                              state,
+                                                          );
+                                                      },
+                                                  )
+                                            : undefined
                                     }
                                 />
                             )}
@@ -500,7 +575,9 @@ export function ProjectPageHeader({
                     ? [{ label: "Chats" }]
                     : activeSection === "reviews"
                       ? [{ label: "Tabular Reviews" }]
-                      : (documentFolderBreadcrumbs ?? [])),
+                      : activeSection === "tasks"
+                        ? [{ label: "Tasks" }]
+                        : (documentFolderBreadcrumbs ?? [])),
             ]}
             actionGroups={[
                 [

@@ -1695,6 +1695,134 @@ export interface ProjectPeople {
     admin_contacts?: ProjectContact[];
 }
 
+export type NotificationEmailMode = "immediate" | "daily" | "off";
+
+export interface AppNotification {
+    id: string;
+    kind: string;
+    title: string;
+    body: string | null;
+    href: string | null;
+    project_id: string | null;
+    document_id: string | null;
+    read_at: string | null;
+    emailed_at: string | null;
+    created_at: string;
+}
+
+export interface NotificationPreferences {
+    email_mode: NotificationEmailMode;
+    /** False when the deployment has no SMTP: the choice is kept, nothing is sent. */
+    email_configured: boolean;
+}
+
+export async function listNotifications(options: {
+    unreadOnly?: boolean;
+    limit?: number;
+} = {}): Promise<{ notifications: AppNotification[]; unread_count: number }> {
+    const params = new URLSearchParams();
+    if (options.unreadOnly) params.set("unread", "1");
+    if (options.limit) params.set("limit", String(options.limit));
+    const query = params.toString();
+    return apiRequest(`/user/notifications${query ? `?${query}` : ""}`);
+}
+
+export async function markNotificationsRead(
+    selection: { ids: string[] } | { all: true },
+): Promise<{ marked: number }> {
+    return apiRequest(`/user/notifications/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(selection),
+    });
+}
+
+export async function getNotificationPreferences(): Promise<NotificationPreferences> {
+    return apiRequest(`/user/notifications/preferences`);
+}
+
+export async function setNotificationPreferences(
+    emailMode: NotificationEmailMode,
+): Promise<NotificationPreferences> {
+    return apiRequest(`/user/notifications/preferences`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email_mode: emailMode }),
+    });
+}
+
+export type ProjectTaskStatus = "open" | "in_progress" | "done" | "cancelled";
+
+export interface ProjectTask {
+    id: string;
+    project_id: string;
+    document_id: string | null;
+    title: string;
+    description: string | null;
+    status: ProjectTaskStatus;
+    assignee_user_id: string | null;
+    assignee_email: string | null;
+    assignee_display_name: string | null;
+    /** A calendar date as YYYY-MM-DD. */
+    due_on: string | null;
+    created_by: string | null;
+    completed_at: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface ProjectTaskInput {
+    title?: string;
+    description?: string | null;
+    status?: ProjectTaskStatus;
+    due_on?: string | null;
+    document_id?: string | null;
+    /** The email of a person with access to the project; null unassigns. */
+    assignee_email?: string | null;
+}
+
+export async function listProjectTasks(
+    projectId: string,
+    status: "open" | "done" | "all" = "open",
+): Promise<ProjectTask[]> {
+    const res = await apiRequest<{ tasks: ProjectTask[] }>(
+        `/projects/${projectId}/tasks?status=${status}`,
+    );
+    return res.tasks;
+}
+
+export async function createProjectTask(
+    projectId: string,
+    input: ProjectTaskInput,
+): Promise<ProjectTask> {
+    return apiRequest<ProjectTask>(`/projects/${projectId}/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+    });
+}
+
+export async function updateProjectTask(
+    projectId: string,
+    taskId: string,
+    patch: ProjectTaskInput,
+): Promise<ProjectTask> {
+    return apiRequest<ProjectTask>(`/projects/${projectId}/tasks/${taskId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+    });
+}
+
+export async function deleteProjectTask(
+    projectId: string,
+    taskId: string,
+): Promise<{ deleted_task_id: string }> {
+    return apiRequest(`/projects/${projectId}/tasks/${taskId}`, {
+        method: "DELETE",
+    });
+}
+
 export async function getProjectPeople(
     projectId: string,
 ): Promise<ProjectPeople> {
@@ -2644,6 +2772,8 @@ export async function addDocumentToProject(
     );
 }
 
+export type DocumentVersionReviewState = "draft" | "in_review" | "approved";
+
 export interface DocumentVersion {
     id: string;
     version_number: number | null;
@@ -2656,6 +2786,11 @@ export interface DocumentVersion {
     textless_page_count?: number | null;
     deleted_at?: string | null;
     deleted_by?: string | null;
+    /** Draft until someone sends these bytes into review or approves them. */
+    review_state?: DocumentVersionReviewState | null;
+    reviewed_by?: string | null;
+    reviewed_at?: string | null;
+    review_note?: string | null;
 }
 
 export async function listDocumentVersions(documentId: string): Promise<{
@@ -2748,6 +2883,22 @@ export async function renameDocumentVersion(
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ filename }),
+        },
+    );
+}
+
+export async function setDocumentVersionReview(
+    documentId: string,
+    versionId: string,
+    state: DocumentVersionReviewState,
+    note?: string | null,
+): Promise<DocumentVersion> {
+    return apiRequest<DocumentVersion>(
+        `/single-documents/${documentId}/versions/${versionId}/review`,
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(note == null ? { state } : { state, note }),
         },
     );
 }

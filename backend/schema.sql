@@ -58,6 +58,11 @@ create table if not exists public.user_profiles (
   subagent_reasoning text check (subagent_reasoning in ('none', 'low', 'medium', 'high', 'xhigh', 'max')),
   quote_model text,
   mfa_on_login boolean not null default false,
+  -- How notifications reach the person by email when SMTP is configured
+  -- (20261023_04): at once, in a daily digest, or never.
+  notification_email_mode text not null default 'immediate'
+    constraint user_profiles_notification_email_mode_check
+    check (notification_email_mode in ('immediate', 'daily', 'off')),
   -- Superseded by user_courtlistener_connections.enabled (20261022_01) and
   -- no longer read; kept for a backend that predates that migration.
   legal_research_us boolean not null default true,
@@ -1330,6 +1335,12 @@ create table if not exists public.document_versions (
   deleted_at timestamptz,
   deleted_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now(),
+  -- Review state of these bytes: a new version starts as a draft again.
+  -- reviewed_by/reviewed_at record who set the current state and when.
+  review_state text not null default 'draft',
+  reviewed_by uuid references auth.users(id) on delete set null,
+  reviewed_at timestamptz,
+  review_note text,
   constraint document_versions_source_check
     check (source = any (array[
       'upload'::text,
@@ -1338,7 +1349,11 @@ create table if not exists public.document_versions (
       'user_accept'::text,
       'user_reject'::text,
       'generated'::text
-    ]))
+    ])),
+  constraint document_versions_review_state_check
+    check (review_state in ('draft', 'in_review', 'approved')),
+  constraint document_versions_review_note_check
+    check (review_note is null or char_length(review_note) <= 2000)
 );
 
 create index if not exists document_versions_document_id_idx
@@ -1347,6 +1362,88 @@ create index if not exists document_versions_document_id_idx
 create index if not exists document_versions_active_document_id_idx
   on public.document_versions(document_id, created_at desc)
   where deleted_at is null;
+
+-- Tasks on a project: a title, an owner, a due date and a status, optionally
+-- tied to one document (20261023_03). The assignee must already have access
+-- to the project; assignee_email keeps the task legible after the account is
+-- gone, and created_by is provenance only, like projects.user_id.
+create table if not exists public.project_tasks (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.projects(id) on delete cascade,
+  document_id uuid references public.documents(id) on delete set null,
+  title text not null,
+  description text,
+  status text not null default 'open',
+  assignee_user_id uuid references auth.users(id) on delete set null,
+  assignee_email text,
+  due_on date,
+  created_by uuid references auth.users(id) on delete set null,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint project_tasks_title_check
+    check (char_length(title) between 1 and 300),
+  constraint project_tasks_description_check
+    check (description is null or char_length(description) <= 4000),
+  constraint project_tasks_status_check
+    check (status in ('open', 'in_progress', 'done', 'cancelled')),
+  constraint project_tasks_assignee_email_check
+    check (assignee_email is null or assignee_email = lower(assignee_email))
+);
+
+create index if not exists project_tasks_project_status_due_idx
+  on public.project_tasks(project_id, status, due_on);
+create index if not exists project_tasks_assignee_open_idx
+  on public.project_tasks(assignee_user_id, due_on)
+  where status in ('open', 'in_progress');
+create index if not exists project_tasks_document_idx
+  on public.project_tasks(document_id)
+  where document_id is not null;
+
+alter table public.project_tasks enable row level security;
+revoke all on public.project_tasks from anon, authenticated;
+grant select, insert, update, delete on public.project_tasks to service_role;
+
+-- In-app notifications, emailed per person at once, daily or never
+-- (20261023_04). org_id has no foreign key, like audit_events: the row
+-- outlives the organization. subject_type/subject_id let reminders about the
+-- same thing be rate-limited.
+create table if not exists public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  org_id uuid,
+  kind text not null,
+  title text not null,
+  body text,
+  href text,
+  project_id uuid,
+  document_id uuid,
+  subject_type text,
+  subject_id text,
+  read_at timestamptz,
+  emailed_at timestamptz,
+  created_at timestamptz not null default now(),
+  constraint notifications_kind_check check (char_length(kind) between 1 and 64),
+  constraint notifications_title_check check (char_length(title) between 1 and 300),
+  constraint notifications_body_check check (body is null or char_length(body) <= 2000),
+  constraint notifications_href_check check (href is null or char_length(href) <= 500)
+);
+
+create index if not exists notifications_user_created_idx
+  on public.notifications(user_id, created_at desc);
+create index if not exists notifications_user_unread_idx
+  on public.notifications(user_id, created_at desc)
+  where read_at is null;
+create index if not exists notifications_unemailed_idx
+  on public.notifications(user_id, created_at)
+  where emailed_at is null;
+create index if not exists notifications_subject_idx
+  on public.notifications(user_id, kind, subject_id, created_at desc)
+  where subject_id is not null;
+
+alter table public.notifications enable row level security;
+revoke all on public.notifications from anon, authenticated;
+grant select, insert, update, delete on public.notifications to service_role;
 
 create index if not exists document_versions_doc_vnum_idx
   on public.document_versions(document_id, version_number);
@@ -11097,6 +11194,9 @@ insert into public.schema_migrations (filename) values
   ('20261021_03_user_response_details.sql'),
   ('20261021_04_word_chat_message_playbook.sql'),
   ('20261022_01_workspace_connectors.sql'),
+  ('20261023_02_document_version_review_state.sql'),
+  ('20261023_03_project_tasks.sql'),
+  ('20261023_04_notifications.sql'),
   ('20261024_01_org_keys_central_only.sql'),
   ('20261024_02_workspace_scoped_data_deletion.sql'),
   ('20261024_03_backfill_project_child_org_id.sql'),

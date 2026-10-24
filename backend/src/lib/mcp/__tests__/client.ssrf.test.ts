@@ -19,8 +19,10 @@ vi.mock("undici", async (importOriginal) => {
 });
 
 import { BlockedDestinationError } from "../../blockedDestination";
+import type { LookupAddress } from "dns";
 import {
     guardedFetch,
+    guardedLookup,
     mcpOAuthCallbackUrl,
     validateRemoteMcpUrl,
 } from "../client";
@@ -458,5 +460,134 @@ describe("guardedFetch for public web pages", () => {
             allowHttp: true,
         });
         expect(res.status).toBe(200);
+    });
+});
+
+describe("trusted private origins", () => {
+    const fetchSpy = vi.mocked(undiciFetch);
+    const originalTrusted = process.env.TRUSTED_PRIVATE_ORIGINS;
+
+    beforeEach(() => {
+        fetchSpy.mockReset();
+        process.env.TRUSTED_PRIVATE_ORIGINS = "http://tax-register:8080, http://localhost:11434";
+    });
+
+    afterEach(() => {
+        if (originalTrusted === undefined) delete process.env.TRUSTED_PRIVATE_ORIGINS;
+        else process.env.TRUSTED_PRIVATE_ORIGINS = originalTrusted;
+    });
+
+    it("lets an exact trusted origin use plain http on a private address", async () => {
+        resolvesTo("172.18.0.5");
+        await expect(validateRemoteMcpUrl("http://tax-register:8080/mcp")).resolves.toBe(
+            "http://tax-register:8080/mcp",
+        );
+        expect(lookupMock).toHaveBeenCalledWith("tax-register", expect.anything());
+    });
+
+    it("lets a trusted loopback origin through, name or literal", async () => {
+        resolvesTo("127.0.0.1");
+        await expect(validateRemoteMcpUrl("http://localhost:11434/v1")).resolves.toBe(
+            "http://localhost:11434/v1",
+        );
+        process.env.TRUSTED_PRIVATE_ORIGINS = "http://127.0.0.1:11434";
+        await expect(validateRemoteMcpUrl("http://127.0.0.1:11434/v1")).resolves.toBe(
+            "http://127.0.0.1:11434/v1",
+        );
+    });
+
+    it("trusts the origin exactly: another port or scheme stays blocked", async () => {
+        resolvesTo("172.18.0.5");
+        await expect(validateRemoteMcpUrl("http://tax-register:9000/mcp")).rejects.toThrow(
+            /HTTPS/,
+        );
+        await expect(validateRemoteMcpUrl("https://tax-register:8080/mcp")).rejects.toThrow(
+            /blocked network address/,
+        );
+        await expect(validateRemoteMcpUrl("http://tax-register/mcp")).rejects.toThrow(/HTTPS/);
+    });
+
+    it("does not trust a credentialed URL on a trusted origin", async () => {
+        resolvesTo("172.18.0.5");
+        await expect(
+            validateRemoteMcpUrl("http://user:secret@tax-register:8080/mcp"),
+        ).rejects.toThrow(/HTTPS/);
+    });
+
+    it("keeps cloud metadata addresses blocked even for a trusted name", async () => {
+        resolvesTo("169.254.169.254");
+        await expect(validateRemoteMcpUrl("http://tax-register:8080/mcp")).rejects.toThrow(
+            /blocked network address/,
+        );
+        resolvesTo("172.18.0.5", "fe80::1");
+        await expect(validateRemoteMcpUrl("http://tax-register:8080/mcp")).rejects.toThrow(
+            /blocked network address/,
+        );
+    });
+
+    it("leaves every other private host blocked", async () => {
+        resolvesTo("172.18.0.6");
+        await expect(validateRemoteMcpUrl("https://other-service/mcp")).rejects.toThrow(
+            /blocked network address/,
+        );
+    });
+
+    it("sends the request through the pinned dispatcher for a trusted origin", async () => {
+        resolvesTo("172.18.0.5");
+        fetchSpy.mockResolvedValue(new Response("ok", { status: 200 }) as never);
+        const res = await guardedFetch("http://tax-register:8080/mcp", { method: "POST" });
+        expect(res.status).toBe(200);
+        const init = fetchSpy.mock.calls[0][1] as RequestInit & { dispatcher?: unknown };
+        expect(init.dispatcher).toBeInstanceOf(Agent);
+        expect(init.redirect).toBe("manual");
+    });
+
+    it("resolves a trusted hostname at connect time and blocks metadata addresses there", async () => {
+        resolvesTo("172.18.0.5");
+        const accepted = await new Promise<LookupAddress[]>((resolve, reject) =>
+            guardedLookup("tax-register", {}, (err, addresses) =>
+                err ? reject(err) : resolve(addresses),
+            ),
+        );
+        expect(accepted.map((a) => a.address)).toEqual(["172.18.0.5"]);
+
+        resolvesTo("169.254.169.254");
+        await expect(
+            new Promise((resolve, reject) =>
+                guardedLookup("tax-register", {}, (err, addresses) =>
+                    err ? reject(err) : resolve(addresses),
+                ),
+            ),
+        ).rejects.toThrow(/blocked network address/);
+
+        resolvesTo("172.18.0.6");
+        await expect(
+            new Promise((resolve, reject) =>
+                guardedLookup("other-service", {}, (err, addresses) =>
+                    err ? reject(err) : resolve(addresses),
+                ),
+            ),
+        ).rejects.toThrow(/blocked network address/);
+    });
+
+    it("follows a redirect onto a trusted origin and drops credentials on the hop", async () => {
+        resolvesTo("93.184.216.34");
+        fetchSpy
+            .mockResolvedValueOnce(
+                new Response(null, {
+                    status: 302,
+                    headers: { location: "http://tax-register:8080/mcp" },
+                }) as never,
+            )
+            .mockResolvedValueOnce(new Response("ok", { status: 200 }) as never);
+        const res = await guardedFetch("https://public.example.com/start", {
+            method: "GET",
+            headers: { Authorization: "Bearer secret" },
+        });
+        expect(res.status).toBe(200);
+        expect(fetchSpy).toHaveBeenCalledTimes(2);
+        expect(fetchSpy.mock.calls[1][0]).toBe("http://tax-register:8080/mcp");
+        const hopInit = fetchSpy.mock.calls[1][1] as { headers?: Record<string, string> };
+        expect(hopInit.headers?.Authorization ?? hopInit.headers?.authorization).toBeUndefined();
     });
 });

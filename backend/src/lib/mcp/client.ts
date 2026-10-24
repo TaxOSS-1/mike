@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import type { LookupAddress } from "dns";
 import dns from "dns/promises";
 import net from "net";
 import { promisify } from "node:util";
@@ -9,6 +10,11 @@ import {
 } from "../blockedDestination";
 import { isBlockedIp } from "../privateIp";
 import { configuredApiPublicUrl } from "../runtimeConfig";
+import {
+    isMetadataAddress,
+    isTrustedPrivateOrigin,
+    trustedPrivateHostnames,
+} from "./trustedOrigins";
 import {
     HEADER_NAME_RE,
     MAX_CUSTOM_HEADER_VALUE_LENGTH,
@@ -311,9 +317,15 @@ export async function validateRemoteMcpUrl(
     } catch {
         throw new Error(`${label} must be a valid URL.`);
     }
+    // An origin the operator listed in TRUSTED_PRIVATE_ORIGINS may use plain
+    // http and sit on the private network Mike runs in (a Compose sibling such
+    // as a self-hosted MCP server). The match is on the exact origin, before
+    // credentials are stripped so a credentialed URL never counts as trusted.
+    const trusted =
+        !url.username && !url.password && isTrustedPrivateOrigin(url);
     const allowed =
         url.protocol === "https:" ||
-        (options.allowHttp === true && url.protocol === "http:");
+        ((options.allowHttp === true || trusted) && url.protocol === "http:");
     if (!allowed) {
         throw new Error(
             `${label} must use ${options.allowHttp ? "HTTP or HTTPS" : "HTTPS"}.`,
@@ -324,7 +336,7 @@ export async function validateRemoteMcpUrl(
     url.hash = "";
 
     const hostname = canonicalHostname(url);
-    if (isBlockedHostname(hostname)) {
+    if (!trusted && isBlockedHostname(hostname)) {
         throw new BlockedDestinationError(`${label} points to a blocked host.`);
     }
 
@@ -340,13 +352,58 @@ export async function validateRemoteMcpUrl(
     const addresses = literalFamily
         ? [{ address: literalHost }]
         : await dns.lookup(hostname, { all: true, verbatim: true });
-    if (!addresses.length || addresses.some(({ address }) => isBlockedIp(address))) {
+    if (
+        !addresses.length ||
+        addresses.some(({ address }) => isBlockedAddressFor(address, trusted))
+    ) {
         throw new BlockedDestinationError(
             `${label} resolves to a blocked network address.`,
         );
     }
 
     return url.toString();
+}
+
+// A trusted origin's host may resolve anywhere on the operator's network, but
+// never to the link-local ranges cloud metadata services live on.
+function isBlockedAddressFor(address: string, trusted: boolean): boolean {
+    return trusted ? isMetadataAddress(address) : isBlockedIp(address);
+}
+
+/**
+ * The connect-time half of the guard: resolve `hostname` and hand undici only
+ * addresses the guard accepts, so the address validated is the address
+ * connected to. Exported for tests; `guardedAgent` is its only runtime caller.
+ */
+export function guardedLookup(
+    hostname: string,
+    _options: unknown,
+    callback: (err: Error | null, addresses: LookupAddress[]) => void,
+): void {
+    const trusted = trustedPrivateHostnames().has(
+        hostname.toLowerCase().replace(/\.+$/, ""),
+    );
+    dns.lookup(hostname, { all: true, verbatim: true })
+        .then((addresses) => {
+            if (
+                !addresses.length ||
+                addresses.some(({ address }) => isBlockedAddressFor(address, trusted))
+            ) {
+                // Shared by every caller; guardedFetch re-labels it
+                // with the caller's own wording.
+                callback(
+                    new BlockedDestinationError(
+                        "Destination resolves to a blocked network address.",
+                    ),
+                    [],
+                );
+                return;
+            }
+            callback(null, addresses);
+        })
+        .catch((err: unknown) =>
+            callback(err instanceof Error ? err : new Error(String(err)), []),
+        );
 }
 
 export function headersForAuth(config: McpConnectorAuthConfig) {
@@ -417,32 +474,8 @@ export function authConfigPatch(config: McpConnectorAuthConfig): Record<string, 
 // keep-alive socket behind for every MCP request.
 const guardedAgent = new Agent({
     connect: {
-        lookup: (hostname, _options, callback) => {
-            dns.lookup(hostname, { all: true, verbatim: true })
-                .then((addresses) => {
-                    if (
-                        !addresses.length ||
-                        addresses.some(({ address }) => isBlockedIp(address))
-                    ) {
-                        // Shared by every caller; guardedFetch re-labels it
-                        // with the caller's own wording.
-                        callback(
-                            new BlockedDestinationError(
-                                "Destination resolves to a blocked network address.",
-                            ),
-                            [],
-                        );
-                        return;
-                    }
-                    callback(null, addresses);
-                })
-                .catch((err: unknown) =>
-                    callback(
-                        err instanceof Error ? err : new Error(String(err)),
-                        [],
-                    ),
-                );
-        },
+        lookup: (hostname, options, callback) =>
+            guardedLookup(hostname, options, callback),
     },
 });
 

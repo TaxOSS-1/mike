@@ -28,6 +28,7 @@ import {
     renameVersion,
     deleteVersion,
     resolveEdit,
+    setVersionReviewState,
 } from "./documents.service";
 
 export const documentsRouter = Router();
@@ -344,6 +345,36 @@ documentsRouter.patch(
             return void res
                 .status(result.status ?? 404)
                 .json({ detail: result.detail });
+        res.json(result.version);
+    }),
+);
+
+// PATCH /single-documents/:documentId/versions/:versionId/review
+// Set a version's review state. Pass `{ "state": "draft" | "in_review" |
+// "approved", "note"?: "…" }`. Draft and in_review need content.edit;
+// approved needs access.manage (a project Owner).
+documentsRouter.patch(
+    "/:documentId/versions/:versionId/review",
+    requireAuth,
+    asyncRoute(async (req, res) => {
+        const userId = res.locals.userId as string;
+        const userEmail = res.locals.userEmail as string | undefined;
+        const { documentId, versionId } = req.params;
+        const db = createServerSupabase();
+
+        const result = await setVersionReviewState(
+            {
+                documentId,
+                versionId,
+                state: req.body?.state,
+                note: req.body?.note,
+                userId,
+                userEmail,
+            },
+            db,
+        );
+        if (!result.ok)
+            return void res.status(result.status).json({ detail: result.detail });
         res.json(result.version);
     }),
 );

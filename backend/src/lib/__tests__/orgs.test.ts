@@ -1,5 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { ownerlessRpcResult } from "../../__tests__/helpers/ownerlessRpc";
+
+// Invitations are complete without email; the message is a courtesy the
+// deployment may or may not be able to send. The mailer is stubbed so the
+// cases below see what would be sent, and nothing leaves the test.
+const mailMocks = vi.hoisted(() => ({
+    sendMail: vi.fn(async (..._args: unknown[]) => ({ ok: true })),
+}));
+vi.mock("../mail/mail", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../mail/mail")>()),
+    sendMail: (...args: unknown[]) => mailMocks.sendMail(...args),
+}));
 import { handoverRpcResult } from "../../__tests__/helpers/handoverRpc";
 import {
     acceptInvitation,
@@ -1756,5 +1767,52 @@ describe("owner and admin tiers", () => {
             }),
         ).resolves.toMatchObject({ ok: true, role: "admin" });
         expect(roleOf(db, "orgadmin1")).toBe("admin");
+    });
+});
+
+describe("invitation email", () => {
+    it("emails the invitee on creation and again on resend, to the normalized address", async () => {
+        mailMocks.sendMail.mockClear();
+        const db = seedOrg();
+        const created = await createInvitation(db, {
+            actorId: "owner1",
+            actorEmail: "owner@acme.example",
+            orgId: "o1",
+            email: "  Newbie@Acme.Example ",
+            role: "admin",
+        });
+        expect(created.ok).toBe(true);
+        expect(mailMocks.sendMail).toHaveBeenCalledTimes(1);
+        const message = mailMocks.sendMail.mock.calls[0][0] as unknown as {
+            to: string;
+            subject: string;
+            text: string;
+        };
+        expect(message.to).toBe("newbie@acme.example");
+        expect(message.subject).toMatch(/invited to join/);
+        expect(message.text).toMatch(/as an admin/);
+        expect(message.text).toMatch(/settings\/organizations/);
+
+        if (!created.ok) return;
+        const resent = await resendInvitation(db, {
+            actorId: "owner1",
+            orgId: "o1",
+            invitationId: created.invitation.id as string,
+        });
+        expect(resent.ok).toBe(true);
+        expect(mailMocks.sendMail).toHaveBeenCalledTimes(2);
+    });
+
+    it("still creates the invitation when the mailer refuses", async () => {
+        mailMocks.sendMail.mockClear();
+        mailMocks.sendMail.mockResolvedValueOnce({ ok: false, reason: "send_failed" } as never);
+        const db = seedOrg();
+        const created = await createInvitation(db, {
+            actorId: "owner1",
+            orgId: "o1",
+            email: "quiet@acme.example",
+            role: "member",
+        });
+        expect(created.ok).toBe(true);
     });
 });

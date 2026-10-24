@@ -497,7 +497,7 @@ export async function buildProjectExportManifest(db: Db, projectId: string) {
                           .in("document_id", documentIds)
                           .order("created_at", { ascending: true })
                           .order("id", { ascending: true }),
-                  "id, document_id, version_number, source, filename, file_type, size_bytes, content_sha256, deleted_at, created_at",
+                  "id, document_id, version_number, source, filename, file_type, size_bytes, content_sha256, deleted_at, created_at, review_state, reviewed_by, reviewed_at",
               ),
         documentIds.length === 0
             ? Promise.resolve([])
@@ -546,6 +546,9 @@ export async function buildProjectExportManifest(db: Db, projectId: string) {
                 content_sha256: v.content_sha256,
                 deleted_at: v.deleted_at,
                 created_at: v.created_at,
+                review_state: v.review_state ?? "draft",
+                reviewed_by: v.reviewed_by ?? null,
+                reviewed_at: v.reviewed_at ?? null,
             })),
             edits: (editsByDoc.get(doc.id as string) ?? []).map((e) => ({
                 id: e.id,
